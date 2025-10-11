@@ -47,13 +47,15 @@ export class MockDataSource {
   private seed: number
   private linkIds: string[]
   private nodeIds: string[]
+  private adj: Map<string, string[]>
 
-  constructor(duration = 30, seed = 42) {
+  constructor(duration = 30, seed = 42, layout?: Layout) {
     this.duration = duration
     this.seed = seed
-    this.layout = this.buildLayout()
+    this.layout = layout ?? this.buildLayout()
     this.nodeIds = this.layout.nodes.map((n) => n.id)
     this.linkIds = this.layout.links.map((l) => l.id)
+    this.adj = this.buildAdjacency()
     this.events = this.buildEvents()
   }
 
@@ -107,23 +109,54 @@ export class MockDataSource {
   private buildEvents(): NetworkEvent[] {
     const events: NetworkEvent[] = []
     const rnd = this.prng(this.seed + 1)
-    const paths: string[][] = [
-      ['h1', 's1', 's2', 'h6'],
-      ['h2', 's1', 's2', 'h5'],
-      ['h3', 's1', 's2', 'h4'],
-      ['h4', 's2', 's1', 'h1'],
-      ['h5', 's2', 's1', 'h2'],
-      ['h6', 's2', 's1', 'h3'],
-    ]
-    for (let i = 0; i < 120; i++) {
-      const t = rnd() * this.duration
-      const path = paths[Math.floor(rnd() * paths.length)]
-      const color = hsvToRgbHex(rnd(), 0.7, 1)
-      events.push({ t, path, color })
+    const hosts = this.layout.nodes.filter((n) => n.type === 'host').map((n) => n.id)
+    const rate = 12 // packets per second overall
+    const total = Math.floor(rate * this.duration)
+    for (let i = 0; i < total; i++) {
+      const t = (i / rate) + rnd() * 0.02 // small jitter
+      const src = hosts[Math.floor(rnd() * hosts.length)]
+      let dst = hosts[Math.floor(rnd() * hosts.length)]
+      if (dst === src) dst = hosts[(hosts.indexOf(src) + 1) % hosts.length]
+      const path = this.shortestPath(src, dst)
+      const color = hsvToRgbHex(rnd(), 0.6, 1)
+      if (path.length >= 2) events.push({ t, path, color })
     }
-    // Sort by time for sequential emission
     events.sort((a, b) => a.t - b.t)
     return events
+  }
+
+  private buildAdjacency(): Map<string, string[]> {
+    const m = new Map<string, string[]>()
+    for (const n of this.nodeIds) m.set(n, [])
+    for (const l of this.layout.links) {
+      m.get(l.a)!.push(l.b)
+      m.get(l.b)!.push(l.a)
+    }
+    return m
+  }
+
+  private shortestPath(a: string, b: string): string[] {
+    if (a === b) return [a]
+    const q: string[] = [a]
+    const prev = new Map<string, string | null>()
+    prev.set(a, null)
+    while (q.length) {
+      const u = q.shift()!
+      for (const v of this.adj.get(u) ?? []) {
+        if (!prev.has(v)) {
+          prev.set(v, u)
+          if (v === b) {
+            const path: string[] = []
+            let cur: string | null = b
+            while (cur) { path.push(cur); cur = prev.get(cur) ?? null }
+            path.reverse()
+            return path
+          }
+          q.push(v)
+        }
+      }
+    }
+    return [a]
   }
 
   private prng(seed: number) {

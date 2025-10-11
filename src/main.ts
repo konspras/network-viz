@@ -11,12 +11,15 @@ window.addEventListener('DOMContentLoaded', async () => {
   const speedVal = document.getElementById('speedVal') as HTMLSpanElement
 
   const controller = await initNetworkViz(container, {
-    width: Math.min(window.innerWidth, 1280),
-    height: Math.min(window.innerHeight - 64, 800),
+    width: container.clientWidth,
+    height: container.clientHeight,
     onTimeUpdate: (t) => {
       timeLabel.textContent = `t = ${t.toFixed(1)}s`
     },
   })
+
+  // Force a layout sizing pass after styles settle
+  controller.resize(container.clientWidth, container.clientHeight)
 
   // UI bindings
   playPauseBtn.onclick = () => {
@@ -44,6 +47,6 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   // Handle resize
   window.addEventListener('resize', () => {
-    controller.resize(Math.min(window.innerWidth, 1280), Math.min(window.innerHeight - 64, 800))
+    controller.resize(container.clientWidth, container.clientHeight)
   })
 })
