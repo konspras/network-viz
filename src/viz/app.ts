@@ -2,7 +2,6 @@ import { Application, Container } from 'pixi.js'
 import { buildScene } from './scene.ts'
 import { MockDataSource } from './data.ts'
 import { makeLeafSpineLayout } from './topologies/leafSpine.ts'
-import type { NetworkEvent } from './data.ts'
 
 export type VizOptions = {
   width: number
@@ -45,8 +44,8 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
     const dt = (app.ticker.deltaMS / 1000) * speed
     simTime = Math.min(simTime + dt, duration)
     // Drive scene from time series
-    const snapshot = data.sample(simTime)
-    scene.update(snapshot, dt)
+  const snapshot = data.sample(simTime)
+  scene.update(snapshot)
     opts.onTimeUpdate?.(simTime)
     if (simTime >= duration) {
       playing = false
@@ -54,19 +53,12 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
   })
 
   // Discrete event stream (packets) -> very light, use app.ticker for emission
-  let lastEventIndex = 0
-  app.ticker.add(() => {
-    const events: NetworkEvent[] = data.events
-    while (lastEventIndex < events.length && events[lastEventIndex].t <= simTime) {
-      const ev = events[lastEventIndex++]
-      scene.emitEvent(ev)
-    }
-  })
+  // Packets removed: no event stream
 
   // Initial render at t=0 and fit to container, then re-render with fitted layout
-  scene.update(data.sample(0), 0)
+  scene.update(data.sample(0))
   scene.layoutResize(opts.width, opts.height)
-  scene.update(data.sample(0), 0)
+  scene.update(data.sample(0))
   opts.onTimeUpdate?.(0)
 
   return {
@@ -79,11 +71,10 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
     reset: () => {
       playing = false
       simTime = 0
-      lastEventIndex = 0
   scene.reset()
       // re-fit to current canvas and render initial state
       scene.layoutResize(app.renderer.width, app.renderer.height)
-      scene.update(data.sample(0), 0)
+  scene.update(data.sample(0))
       opts.onTimeUpdate?.(0)
   },
     isPlaying: () => playing,
@@ -94,7 +85,7 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
       app.renderer.resize(w, h)
       scene.layoutResize(w, h)
       // re-render current snapshot so paused view stays correct
-      scene.update(data.sample(simTime), 0)
+  scene.update(data.sample(simTime))
     },
   }
 }
