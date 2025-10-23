@@ -1,5 +1,5 @@
 import { Container, Graphics, Text, Rectangle } from 'pixi.js'
-import type { Layout, Snapshot, NodeDef, LinkDef } from './data'
+import type { Layout, Snapshot, NodeDef, LinkDef, LinkSnapshot } from './data'
 
 export function buildScene(root: Container, layout: Layout) {
   // screen-space grid layer (infinite grid) + world container
@@ -22,6 +22,7 @@ export function buildScene(root: Container, layout: Layout) {
   const linkGfx = new Map<string, Graphics>()
   const linkByEnds = new Map<string, LinkDef>()
   const torGeom = new Map<string, { left: number; right: number; top: number; bottom: number }>()
+  const spineGeom = new Map<string, { left: number; right: number; top: number; bottom: number; anchors: Record<string, number> }>()
 
   const margin = 60
   const toPx = (n: NodeDef) => {
@@ -148,29 +149,53 @@ export function buildScene(root: Container, layout: Layout) {
         // Spine rectangle widened to ToR span with per-link queues to ToRs
         const torIds = layout.nodes.filter(nn => nn.id.startsWith('tor')).map(nn => nn.id)
         const torXs = torIds.map(id => positions.get(id)!.x)
-        const left = Math.min(...torXs) - 20
-        const right = Math.max(...torXs) + 20
+        const torMin = Math.min(...torXs)
+        const torMax = Math.max(...torXs)
+        const span = Math.max(120, torMax - torMin + 60)
+        const width = span / Math.max(1, torIds.length)
+        const left = p.x - width / 2
+        const right = p.x + width / 2
         const h = 28
         const top = p.y - h / 2
         const bottom = p.y + h / 2
         g.roundRect(left, top, right - left, h, 4).fill({ color: fill, alpha: 0.95 }).stroke({ color: 0x0, width: strokeW, alpha: 0.5 })
-        // queues aligned above each ToR
-        const sorted = torXs.slice().sort((a,b)=>a-b)
-        let spacing = 10
-        for (let i=1;i<sorted.length;i++) spacing = Math.max(spacing, sorted[i]-sorted[i-1])
-        const barW = Math.min(12, Math.max(5, spacing * 0.4))
-        for (const tid of torIds) {
-          const link = layout.links.find(l => (l.a === tid && l.b === id) || (l.b === tid && l.a === id))
-          const cx = positions.get(tid)!.x
-          const qLevel = queueLevelForLink(link ? link.id : `${id}-${tid}`, timeSec)
-          const innerTop = top + 5
-          const innerBottom = bottom - 4
-          const innerHeight = Math.max(6, innerBottom - innerTop)
-          const bx = cx - barW/2
-          g.roundRect(bx, innerTop, barW, innerHeight, 2).fill({ color: 0x1e2430, alpha: 0.9 })
-          const filledH = innerHeight * clamp01(qLevel)
-          g.roundRect(bx, innerBottom - filledH, barW, filledH, 2).fill({ color: 0x2dd4bf, alpha: 0.95 })
+
+        const sortedTorIds = torIds.slice().sort((a, b) => positions.get(a)!.x - positions.get(b)!.x)
+        const spanWidth = right - left
+        const marginX = Math.min(28, Math.max(10, spanWidth * 0.12))
+        const usableWidth = Math.max(0, spanWidth - marginX * 2)
+        const anchors: Record<string, number> = {}
+
+        if (sortedTorIds.length === 1) {
+          anchors[sortedTorIds[0]] = left + spanWidth / 2
+        } else if (usableWidth <= 0) {
+          sortedTorIds.forEach((tid) => {
+            anchors[tid] = left + spanWidth / 2
+          })
+        } else {
+          sortedTorIds.forEach((tid, idx) => {
+            const t = sortedTorIds.length === 1 ? 0.5 : idx / (sortedTorIds.length - 1)
+            anchors[tid] = left + marginX + usableWidth * t
+          })
         }
+
+        spineGeom.set(id, { left, right, top, bottom, anchors })
+
+        // queues aligned above each ToR using shared anchors
+        const barWidth = Math.min(16, Math.max(6, usableWidth / Math.max(1, sortedTorIds.length)))
+        const innerTop = top + 5
+        const innerBottom = bottom - 4
+        const innerHeight = Math.max(6, innerBottom - innerTop)
+        sortedTorIds.forEach((tid) => {
+          const link = layout.links.find(l => (l.a === tid && l.b === id) || (l.b === tid && l.a === id))
+          const anchorCenter = anchors[tid] ?? (left + spanWidth / 2)
+          const safeCenter = Math.min(Math.max(anchorCenter, left + barWidth / 2 + 4), right - barWidth / 2 - 4)
+          const barLeft = safeCenter - barWidth / 2
+          const qLevel = queueLevelForLink(link ? link.id : `${id}-${tid}`, timeSec)
+          g.roundRect(barLeft, innerTop, barWidth, innerHeight, 2).fill({ color: 0x1e2430, alpha: 0.9 })
+          const filledH = innerHeight * clamp01(qLevel)
+          g.roundRect(barLeft, innerBottom - filledH, barWidth, filledH, 2).fill({ color: 0x2dd4bf, alpha: 0.95 })
+        })
       }
     } else {
       const radius = 10
@@ -186,14 +211,16 @@ export function buildScene(root: Container, layout: Layout) {
     // no per-node label
   }
 
-  function drawLink(id: string, throughput: number) {
+  function drawLink(id: string, usage: LinkSnapshot | undefined) {
     const l = linkByEnds.get(id)!
     let a = positions.get(l.a)!
     let b = positions.get(l.b)!
     const g = linkGfx.get(id)!
     g.clear()
-  const width = (2 + 6 * clamp01(throughput)) / scale
-    const color = lerpColor(0x4b5563, 0x22c55e, clamp01(throughput))
+
+    const valueAB = clamp01(usage?.aToB ?? 0)
+    const valueBA = clamp01(usage?.bToA ?? 0)
+
     // If tor-host link, start at bottom edge of ToR aligned to server x
     const aNode = layout.nodes.find(n => n.id === l.a)!
     const bNode = layout.nodes.find(n => n.id === l.b)!
@@ -213,36 +240,93 @@ export function buildScene(root: Container, layout: Layout) {
         a = { x: a.x, y: a.y - hostRadius }
       }
     } else if (aNode.type === 'switch' && aNode.id.startsWith('sp') && bNode.id.startsWith('tor')) {
-      // spine->tor: start at spine bottom aligned with tor x
-      const torX = positions.get(bNode.id)!.x
-      const spineY = positions.get(aNode.id)!.y
-      const torXs = layout.nodes.filter(nn => nn.id.startsWith('tor')).map(nn => positions.get(nn.id)!.x)
-      const left = Math.min(...torXs) - 20
-      const right = Math.max(...torXs) + 20
-      const h = 28
-      const bottom = spineY + h / 2
-      const x = Math.min(Math.max(torX, left + 2), right - 2)
-      a = { x, y: bottom }
+      const targetX = positions.get(bNode.id)!.x
+      const spine = spineGeom.get(aNode.id)
+      const tor = torGeom.get(bNode.id)
+      if (spine) {
+        const anchor = spine.anchors[bNode.id]
+        const startX = anchor !== undefined ? anchor : Math.min(Math.max(targetX, spine.left + 4), spine.right - 4)
+        a = { x: startX, y: spine.bottom }
+      } else {
+        a = { x: a.x, y: a.y + 16 }
+      }
+      if (tor) {
+        const endX = (tor.left + tor.right) / 2
+        b = { x: endX, y: tor.top }
+      } else {
+        b = { x: targetX, y: b.y - 16 }
+      }
     } else if (bNode.type === 'switch' && bNode.id.startsWith('sp') && aNode.id.startsWith('tor')) {
-      const torX = positions.get(aNode.id)!.x
-      const spineY = positions.get(bNode.id)!.y
-      const torXs = layout.nodes.filter(nn => nn.id.startsWith('tor')).map(nn => positions.get(nn.id)!.x)
-      const left = Math.min(...torXs) - 20
-      const right = Math.max(...torXs) + 20
-      const h = 28
-      const bottom = spineY + h / 2
-      const x = Math.min(Math.max(torX, left + 2), right - 2)
-      b = { x, y: bottom }
+      const targetX = positions.get(aNode.id)!.x
+      const spine = spineGeom.get(bNode.id)
+      const tor = torGeom.get(aNode.id)
+      if (spine) {
+        const anchor = spine.anchors[aNode.id]
+        const endX = anchor !== undefined ? anchor : Math.min(Math.max(targetX, spine.left + 4), spine.right - 4)
+        b = { x: endX, y: spine.bottom }
+      } else {
+        b = { x: b.x, y: b.y + 16 }
+      }
+      if (tor) {
+        const startX = (tor.left + tor.right) / 2
+        a = { x: startX, y: tor.top }
+      } else {
+        a = { x: targetX, y: a.y - 16 }
+      }
     }
-    g.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke({ width, color, alpha: 0.9 })
+
+    // Center guide for context
+    const baseWidth = 1 / scale
+    if (baseWidth > 0.0001) {
+      g.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke({ width: baseWidth, color: 0x1f2937, alpha: 0.6 })
+    }
+
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const len = Math.hypot(dx, dy) || 1
+    const nx = (-dy / len)
+    const ny = (dx / len)
+    const separation = 4 / scale
+
+    const forwardStart = { x: a.x + nx * separation, y: a.y + ny * separation }
+    const forwardEnd = { x: b.x + nx * separation, y: b.y + ny * separation }
+    const reverseStart = { x: b.x - nx * separation, y: b.y - ny * separation }
+    const reverseEnd = { x: a.x - nx * separation, y: a.y - ny * separation }
+
+    const widthAB = (1.5 + 4.5 * valueAB) / scale
+    const widthBA = (1.5 + 4.5 * valueBA) / scale
+    const colorAB = lerpColor(0x383f4c, 0x22c55e, valueAB)
+    const colorBA = lerpColor(0x383f4c, 0x22c55e, valueBA)
+
+    g.moveTo(forwardStart.x, forwardStart.y).lineTo(forwardEnd.x, forwardEnd.y).stroke({ width: widthAB, color: colorAB, alpha: 0.95, cap: 'round' })
+    g.moveTo(reverseStart.x, reverseStart.y).lineTo(reverseEnd.x, reverseEnd.y).stroke({ width: widthBA, color: colorBA, alpha: 0.95, cap: 'round' })
+
+    drawArrowhead(forwardStart, forwardEnd, colorAB, valueAB)
+    drawArrowhead(reverseStart, reverseEnd, colorBA, valueBA)
+
+    function drawArrowhead(from: { x: number; y: number }, to: { x: number; y: number }, color: number, magnitude: number) {
+      const arrowLen = (9 + 5 * magnitude) / scale
+      const arrowWidth = arrowLen * 0.6
+      const angle = Math.atan2(to.y - from.y, to.x - from.x)
+      const backX = to.x - Math.cos(angle) * arrowLen
+      const backY = to.y - Math.sin(angle) * arrowLen
+      const leftX = backX + Math.cos(angle + Math.PI / 2) * arrowWidth
+      const leftY = backY + Math.sin(angle + Math.PI / 2) * arrowWidth
+      const rightX = backX + Math.cos(angle - Math.PI / 2) * arrowWidth
+      const rightY = backY + Math.sin(angle - Math.PI / 2) * arrowWidth
+      g.moveTo(to.x, to.y)
+      g.lineTo(leftX, leftY)
+      g.lineTo(rightX, rightY)
+      g.closePath()
+      g.fill({ color, alpha: 0.95 })
+    }
   }
 
   // Packets removed
 
   function update(snapshot: Snapshot) {
     for (const l of layout.links) {
-      const s = snapshot.links[l.id]?.throughput ?? 0
-      drawLink(l.id, s)
+      drawLink(l.id, snapshot.links[l.id])
     }
     for (const n of layout.nodes) {
       const q = snapshot.nodes[n.id]?.queue ?? 0

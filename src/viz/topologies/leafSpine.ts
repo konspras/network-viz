@@ -6,8 +6,8 @@ export function makeLeafSpineLayout(): Layout {
 
   // Spines on top
   const spines: NodeDef[] = [
-    { id: 'sp1', type: 'switch', x: 0.3, y: 0.12 },
-    { id: 'sp2', type: 'switch', x: 0.7, y: 0.12 },
+    { id: 'sp1', type: 'switch', x: 0.35, y: 0.12 },
+    { id: 'sp2', type: 'switch', x: 0.65, y: 0.12 },
   ]
   nodes.push(...spines)
 

@@ -20,7 +20,9 @@ export type Layout = {
 }
 
 export type LinkSnapshot = {
-  throughput: number // 0..1 normalized
+  // Throughput in normalized units for each direction
+  aToB: number // from link.a -> link.b
+  bToA: number // from link.b -> link.a
 }
 
 export type NodeSnapshot = {
@@ -67,8 +69,16 @@ export class MockDataSource {
       const f1 = 0.2 + rnd() * 0.5
       const f2 = 0.1 + rnd() * 0.3
       const phase = rnd() * Math.PI * 2
-      const val = 0.5 + 0.5 * Math.sin((t * f1 + phase) * 2 * Math.PI) * 0.6 + 0.4 * Math.sin((t * f2 + phase * 0.7) * 2 * Math.PI)
-      links[id] = { throughput: clamp01(val) }
+      const valCenter = 0.5 + 0.5 * Math.sin((t * f1 + phase) * 2 * Math.PI) * 0.6 + 0.4 * Math.sin((t * f2 + phase * 0.7) * 2 * Math.PI)
+
+      const fDir = 0.08 + rnd() * 0.3
+      const phaseDir = rnd() * Math.PI * 2
+      const dirAmp = 0.2 + rnd() * 0.25
+      const dirComponent = Math.sin((t * fDir + phaseDir) * 2 * Math.PI) * dirAmp
+
+      const aToB = clamp01(valCenter + dirComponent)
+      const bToA = clamp01(valCenter - dirComponent)
+      links[id] = { aToB, bToA }
     }
 
     const nodes: Record<string, NodeSnapshot> = {}
