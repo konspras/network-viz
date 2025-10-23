@@ -4,9 +4,12 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
+    "predev": "node scripts/generate-manifest.cjs",
     "dev": "vite",
+    "prebuild": "node scripts/generate-manifest.cjs",
     "build": "tsc && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "generate:manifest": "node scripts/generate-manifest.cjs"
   },
   "devDependencies": {
     "typescript": "~5.9.3",

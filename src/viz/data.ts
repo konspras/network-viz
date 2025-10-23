@@ -1,8 +1,12 @@
 export type NodeType = 'host' | 'switch'
 
+export type MetricsNodeKind = 'host' | 'tor' | 'aggr'
+
 export type NodeDef = {
   id: string
   type: NodeType
+  metricsId: number
+  metricsKind: MetricsNodeKind
   // Normalized layout coordinates [0,1]
   x: number
   y: number
@@ -12,6 +16,12 @@ export type LinkDef = {
   id: string
   a: string // node id
   b: string // node id
+  metrics: {
+    fromId: number
+    fromKind: MetricsNodeKind
+    toId: number
+    toKind: MetricsNodeKind
+  }
 }
 
 export type Layout = {
@@ -19,10 +29,20 @@ export type Layout = {
   links: LinkDef[]
 }
 
+export interface TimeSeriesDataSource {
+  readonly layout: Layout
+  readonly duration: number
+  readonly events: NetworkEvent[]
+  sample(t: number): Snapshot
+  reset(): void
+}
+
 export type LinkSnapshot = {
   // Throughput in normalized units for each direction
   aToB: number // from link.a -> link.b
   bToA: number // from link.b -> link.a
+  queueA?: number // egress queue at link.a towards link.b
+  queueB?: number // egress queue at link.b towards link.a
 }
 
 export type NodeSnapshot = {
@@ -41,7 +61,7 @@ export type NetworkEvent = {
   color?: number // hex color for packet
 }
 
-export class MockDataSource {
+export class MockDataSource implements TimeSeriesDataSource {
   readonly layout: Layout
   readonly duration: number
   readonly events: NetworkEvent[]
@@ -78,7 +98,7 @@ export class MockDataSource {
 
       const aToB = clamp01(valCenter + dirComponent)
       const bToA = clamp01(valCenter - dirComponent)
-      links[id] = { aToB, bToA }
+      links[id] = { aToB, bToA, queueA: clamp01(valCenter), queueB: clamp01(valCenter * 0.8) }
     }
 
     const nodes: Record<string, NodeSnapshot> = {}
@@ -95,17 +115,31 @@ export class MockDataSource {
   private buildLayout(): Layout {
     // Simple topology: 2 switches in center, 6 hosts around
     const nodes: NodeDef[] = [
-      { id: 's1', type: 'switch', x: 0.45, y: 0.45 },
-      { id: 's2', type: 'switch', x: 0.55, y: 0.55 },
-      { id: 'h1', type: 'host', x: 0.15, y: 0.25 },
-      { id: 'h2', type: 'host', x: 0.15, y: 0.75 },
-      { id: 'h3', type: 'host', x: 0.35, y: 0.15 },
-      { id: 'h4', type: 'host', x: 0.75, y: 0.15 },
-      { id: 'h5', type: 'host', x: 0.85, y: 0.35 },
-      { id: 'h6', type: 'host', x: 0.85, y: 0.8 },
+      { id: 's1', type: 'switch', metricsId: 100, metricsKind: 'tor', x: 0.45, y: 0.45 },
+      { id: 's2', type: 'switch', metricsId: 101, metricsKind: 'tor', x: 0.55, y: 0.55 },
+      { id: 'h1', type: 'host', metricsId: 1, metricsKind: 'host', x: 0.15, y: 0.25 },
+      { id: 'h2', type: 'host', metricsId: 2, metricsKind: 'host', x: 0.15, y: 0.75 },
+      { id: 'h3', type: 'host', metricsId: 3, metricsKind: 'host', x: 0.35, y: 0.15 },
+      { id: 'h4', type: 'host', metricsId: 4, metricsKind: 'host', x: 0.75, y: 0.15 },
+      { id: 'h5', type: 'host', metricsId: 5, metricsKind: 'host', x: 0.85, y: 0.35 },
+      { id: 'h6', type: 'host', metricsId: 6, metricsKind: 'host', x: 0.85, y: 0.8 },
     ]
     const links: LinkDef[] = []
-    const addLink = (a: string, b: string) => links.push({ id: `${a}-${b}` , a, b })
+    const addLink = (a: string, b: string) => {
+      const nodeA = nodes.find((n) => n.id === a)!
+      const nodeB = nodes.find((n) => n.id === b)!
+      links.push({
+        id: `${a}-${b}`,
+        a,
+        b,
+        metrics: {
+          fromId: nodeA.metricsId,
+          fromKind: nodeA.metricsKind,
+          toId: nodeB.metricsId,
+          toKind: nodeB.metricsKind,
+        },
+      })
+    }
     addLink('s1', 's2')
     addLink('h1', 's1')
     addLink('h2', 's1')
@@ -178,6 +212,10 @@ export class MockDataSource {
       s ^= s << 5
       return (s >>> 0) / 4294967295
     }
+  }
+
+  reset(): void {
+    // stateless
   }
 }
 

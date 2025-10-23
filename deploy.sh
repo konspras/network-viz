@@ -15,5 +15,6 @@ echo "Preparing GitHub Pages payload..."
 rm -rf docs
 mkdir -p docs
 cp -a dist/. docs/
+cp -a data docs/data
 
 echo "✔ Build copied to docs/. Commit and push to publish."

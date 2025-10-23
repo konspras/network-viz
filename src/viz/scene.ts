@@ -82,13 +82,20 @@ export function buildScene(root: Container, layout: Layout) {
     gridLayer.stroke()
   }
 
-  function drawNode(id: string, queue: number, timeSec: number) {
+  function drawNode(id: string, queue: number, _timeSec: number, snapshot: Snapshot) {
     const n = layout.nodes.find((x) => x.id === id)!
     const p = positions.get(id)!
     const g = nodeGfx.get(id)!
     g.clear()
     const fill = lerpColor(0x1f6feb, 0xeb3b5a, queue)
     const strokeW = 2 / scale
+    const getLinkQueue = (link: LinkDef, sourceId: string) => {
+      const snap = snapshot.links[link.id]
+      if (!snap) return 0
+      if (link.a === sourceId) return clamp01(snap.queueA ?? 0)
+      if (link.b === sourceId) return clamp01(snap.queueB ?? 0)
+      return 0
+    }
     if (n.type === 'switch') {
       const isTor = id.startsWith('tor')
       if (isTor) {
@@ -132,9 +139,8 @@ export function buildScene(root: Container, layout: Layout) {
           for (let i=1;i<sorted.length;i++) spacing = Math.max(spacing, sorted[i]-sorted[i-1])
           const barW = Math.min(10, Math.max(4, spacing * 0.35))
           for (const sid of serverIds) {
-            // find the server-link id for deterministic per-link queue
             const link = layout.links.find(l => (l.a === sid && l.b === id) || (l.b === sid && l.a === id))!
-            const qLevel = queueLevelForLink(link.id, timeSec) // 0..1
+            const qLevel = getLinkQueue(link, id)
             const cx = Math.min(Math.max(positions.get(sid)!.x, left + 2), right - 2)
             const bx = cx - barW/2
             const by = innerBottom
@@ -191,7 +197,7 @@ export function buildScene(root: Container, layout: Layout) {
           const anchorCenter = anchors[tid] ?? (left + spanWidth / 2)
           const safeCenter = Math.min(Math.max(anchorCenter, left + barWidth / 2 + 4), right - barWidth / 2 - 4)
           const barLeft = safeCenter - barWidth / 2
-          const qLevel = queueLevelForLink(link ? link.id : `${id}-${tid}`, timeSec)
+          const qLevel = link ? getLinkQueue(link, id) : 0
           g.roundRect(barLeft, innerTop, barWidth, innerHeight, 2).fill({ color: 0x1e2430, alpha: 0.9 })
           const filledH = innerHeight * clamp01(qLevel)
           g.roundRect(barLeft, innerBottom - filledH, barWidth, filledH, 2).fill({ color: 0x2dd4bf, alpha: 0.95 })
@@ -330,7 +336,7 @@ export function buildScene(root: Container, layout: Layout) {
     }
     for (const n of layout.nodes) {
       const q = snapshot.nodes[n.id]?.queue ?? 0
-      drawNode(n.id, q, snapshot.t)
+      drawNode(n.id, q, snapshot.t, snapshot)
     }
     // no packet movement
   }
@@ -477,19 +483,4 @@ function lerpColor(a: number, b: number, t: number) {
   const g = Math.round(ag + (bg - ag) * t)
   const bl = Math.round(ab + (bb - ab) * t)
   return (r << 16) | (g << 8) | bl
-}
-
-// Simple deterministic per-link queue generator using hash + time
-function queueLevelForLink(linkId: string, t: number): number {
-  // hash link id to a seed
-  let h = 2166136261 >>> 0
-  for (let i = 0; i < linkId.length; i++) {
-    h ^= linkId.charCodeAt(i)
-    h += (h << 1) + (h << 4) + (h << 7) + (h << 8) + (h << 24)
-  }
-  const f1 = 0.1 + ((h & 0xff) / 255) * 0.4
-  const f2 = 0.05 + (((h >> 8) & 0xff) / 255) * 0.2
-  const phase = (((h >> 16) & 0xffff) / 65535) * Math.PI * 2
-  const v = 0.5 + 0.5 * Math.sin((t * f1 + phase) * 2 * Math.PI) * 0.8 + 0.2 * Math.sin((t * f2 + phase * 0.7) * 2 * Math.PI)
-  return clamp01(v)
 }

@@ -1,11 +1,11 @@
 import { Application, Container } from 'pixi.js'
 import { buildScene } from './scene.ts'
-import { MockDataSource } from './data.ts'
-import { makeLeafSpineLayout } from './topologies/leafSpine.ts'
+import type { TimeSeriesDataSource } from './data.ts'
 
 export type VizOptions = {
   width: number
   height: number
+  data: TimeSeriesDataSource
   onTimeUpdate?: (t: number) => void
 }
 
@@ -16,6 +16,7 @@ export type VizController = {
   isPlaying: () => boolean
   setSpeed: (s: number) => void
   resize: (w: number, h: number) => void
+  setDataSource: (data: TimeSeriesDataSource) => void
 }
 
 export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise<VizController> {
@@ -23,9 +24,12 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
   await app.init({ width: opts.width, height: opts.height, background: '#0e1013', antialias: true })
   el.innerHTML = ''
   el.appendChild(app.canvas)
+  if (!app.ticker.started) {
+    app.ticker.start()
+    console.log('[viz] Pixi ticker started explicitly')
+  }
 
-  // Data source (mocked time series and discrete events)
-  const data = new MockDataSource(30, 42, makeLeafSpineLayout())
+  let data = opts.data
 
   // Scene graph
   const world = new Container()
@@ -36,30 +40,41 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
   let playing = false
   let speed = 1
   let simTime = 0
-  const duration = data.duration
+  let duration = data.duration
+  console.log('[viz] initNetworkViz', { duration, width: opts.width, height: opts.height })
+
+  data.reset()
+
+  const renderSnapshot = (time: number) => {
+    const snapshot = data.sample(time)
+    scene.update(snapshot)
+  }
+
+  const notifyTime = (time: number) => {
+    opts.onTimeUpdate?.(time)
+  }
 
   // Main ticker: advance time and update visuals based on time series
+  let frameCount = 0
   app.ticker.add(() => {
     if (!playing) return
     const dt = (app.ticker.deltaMS / 1000) * speed
     simTime = Math.min(simTime + dt, duration)
-    // Drive scene from time series
-  const snapshot = data.sample(simTime)
-  scene.update(snapshot)
-    opts.onTimeUpdate?.(simTime)
+    renderSnapshot(simTime)
+    notifyTime(simTime)
     if (simTime >= duration) {
       playing = false
     }
+    if (++frameCount % 60 === 0) {
+      console.log('[viz] ticker', { simTime, dt, speed })
+    }
   })
 
-  // Discrete event stream (packets) -> very light, use app.ticker for emission
-  // Packets removed: no event stream
-
   // Initial render at t=0 and fit to container, then re-render with fitted layout
-  scene.update(data.sample(0))
+  renderSnapshot(0)
   scene.layoutResize(opts.width, opts.height)
-  scene.update(data.sample(0))
-  opts.onTimeUpdate?.(0)
+  renderSnapshot(0)
+  notifyTime(0)
 
   return {
     play: () => {
@@ -71,21 +86,32 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
     reset: () => {
       playing = false
       simTime = 0
-  scene.reset()
-      // re-fit to current canvas and render initial state
+      data.reset()
+      scene.reset()
       scene.layoutResize(app.renderer.width, app.renderer.height)
-  scene.update(data.sample(0))
-      opts.onTimeUpdate?.(0)
-  },
+      renderSnapshot(0)
+      notifyTime(0)
+    },
     isPlaying: () => playing,
     setSpeed: (s: number) => {
-      speed = Math.max(0.1, Math.min(10, s))
+      speed = Math.max(0.0001, Math.min(10, s))
+      console.log('[viz] speed updated', { speed })
     },
     resize: (w: number, h: number) => {
       app.renderer.resize(w, h)
       scene.layoutResize(w, h)
-      // re-render current snapshot so paused view stays correct
-  scene.update(data.sample(simTime))
+      renderSnapshot(simTime)
+    },
+    setDataSource: (next) => {
+      playing = false
+      simTime = 0
+      data = next
+      duration = data.duration
+      data.reset()
+      scene.reset()
+      renderSnapshot(0)
+      notifyTime(0)
+      console.log('[viz] data source swapped', { duration })
     },
   }
 }
