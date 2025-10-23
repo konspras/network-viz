@@ -38,6 +38,18 @@ button {
 }
 button:hover { border-color: var(--accent); }
 
+select {
+  border-radius: 6px;
+  border: 1px solid #2b3240;
+  background: #10141b;
+  color: var(--text);
+  padding: 0.35rem 0.6rem;
+}
+select:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
 #app {
   width: 100vw;
   height: calc(100vh - 48px);
