@@ -85,11 +85,11 @@ export function buildScene(root: Container, layout: Layout) {
     const w = size.width
     const h = size.height
     gridLayer.clear()
-    gridLayer.rect(0, 0, w, h).fill({ color: 0x0e1013 })
+    gridLayer.rect(0, 0, w, h).fill({ color: 0xffffff })
     if (gapScreen < 4) return // too dense; skip lines
     const offsetX = ((world.position.x % gapScreen) + gapScreen) % gapScreen
     const offsetY = ((world.position.y % gapScreen) + gapScreen) % gapScreen
-    gridLayer.stroke({ color: 0x1b2230, width: 1, alpha: 0.8 })
+    gridLayer.stroke({ color: 0x1a0000, width: 0.5, alpha: 0.08 })
     for (let x = offsetX; x <= w; x += gapScreen) {
       gridLayer.moveTo(x, 0).lineTo(x, h)
     }
@@ -102,10 +102,10 @@ export function buildScene(root: Container, layout: Layout) {
   const maxQueueKb = 1000
 
   const nodeColors = {
-    host: 0x1f6feb,
-    tor: 0x2563eb,
-    spine: 0x0ea5e9,
-    switch: 0x334155,
+    host: 0x1f2937,
+    tor: 0x4b5563,
+    spine: 0x6b7280,
+    switch: 0x374151,
   }
 
   function nodeFillColor(node: NodeDef): number {
@@ -260,10 +260,10 @@ export function buildScene(root: Container, layout: Layout) {
         })
       }
     } else {
-      const radius = 10
+      const radius = 14
   g.circle(p.x, p.y, radius).fill({ color: fill, alpha: 0.95 }).stroke({ color: 0x0, width: strokeW, alpha: 0.4 })
       // queue bar underneath
-      const barW = 34
+      const barW = 40
       const barH = 5
       const bx = p.x - barW / 2
       const by = p.y + radius + 6
@@ -300,6 +300,22 @@ export function buildScene(root: Container, layout: Layout) {
     const cap = linkCapacityGbps()
     const normAB = clamp01(cap > 0 ? rawAB / cap : 0)
     const normBA = clamp01(cap > 0 ? rawBA / cap : 0)
+    const isHostTor = (aNode.metricsKind === 'host' && bNode.metricsKind === 'tor') || (aNode.metricsKind === 'tor' && bNode.metricsKind === 'host')
+    const isTorAggr = (aNode.metricsKind === 'tor' && bNode.metricsKind === 'aggr') || (aNode.metricsKind === 'aggr' && bNode.metricsKind === 'tor')
+    const dashed = (isHostTor || isTorAggr) && false
+    if (dashed) {
+      console.log('[viz] dashed link', {
+        id,
+        fromId: aNode.id,
+        fromKind: aNode.metricsKind,
+        toId: bNode.id,
+        toKind: bNode.metricsKind,
+        isHostTor,
+        isTorAggr,
+        normAB,
+        normBA,
+      })
+    }
 
     // If tor-host link, start at bottom edge of ToR aligned to server x
     const hostRadius = 10
@@ -359,15 +375,15 @@ export function buildScene(root: Container, layout: Layout) {
     const len = Math.hypot(dx, dy) || 1
     const nx = (-dy / len)
     const ny = (dx / len)
-    const separation = 4 / scale
+    const separation = 6 / scale
 
     const forwardStart = { x: a.x + nx * separation, y: a.y + ny * separation }
     const forwardEnd = { x: b.x + nx * separation, y: b.y + ny * separation }
     const reverseStart = { x: b.x - nx * separation, y: b.y - ny * separation }
     const reverseEnd = { x: a.x - nx * separation, y: a.y - ny * separation }
 
-    const widthAB = (0.8 + 5 * normAB) / scale
-    const widthBA = (0.8 + 5 * normBA) / scale
+    const widthAB = (2.4 + 9.5 * normAB) / scale
+    const widthBA = (2.4 + 9.5 * normBA) / scale
 
     const colorFor = (u: number) => {
       if (u <= 0.01) return 0x374151
@@ -378,8 +394,36 @@ export function buildScene(root: Container, layout: Layout) {
     const colorAB = colorFor(normAB)
     const colorBA = colorFor(normBA)
 
-    g.moveTo(forwardStart.x, forwardStart.y).lineTo(forwardEnd.x, forwardEnd.y).stroke({ width: widthAB, color: colorAB, alpha: 0.95, cap: 'round' })
-    g.moveTo(reverseStart.x, reverseStart.y).lineTo(reverseEnd.x, reverseEnd.y).stroke({ width: widthBA, color: colorBA, alpha: 0.95, cap: 'round' })
+    const dashLength = 18 / scale
+    const gapLength = 10 / scale
+
+    const drawStroke = (start: { x: number; y: number }, end: { x: number; y: number }, width: number, color: number, dashed: boolean) => {
+      if (!dashed) {
+        g.moveTo(start.x, start.y)
+        g.lineTo(end.x, end.y)
+        g.stroke({ width, color, alpha: 0.95, cap: 'round', join: 'round' })
+        return
+      }
+      const total = Math.hypot(end.x - start.x, end.y - start.y)
+      if (total === 0) return
+      const dirX = (end.x - start.x) / total
+      const dirY = (end.y - start.y) / total
+      let dist = 0
+      while (dist < total) {
+        const dash = Math.min(dashLength, total - dist)
+        const sx = start.x + dirX * dist
+        const sy = start.y + dirY * dist
+        const ex = start.x + dirX * (dist + dash)
+        const ey = start.y + dirY * (dist + dash)
+        g.moveTo(sx, sy)
+        g.lineTo(ex, ey)
+        dist += dash + gapLength
+      }
+      g.stroke({ width, color, alpha: 0.95, cap: 'round', join: 'round' })
+    }
+
+    drawStroke(forwardStart, forwardEnd, widthAB, colorAB, dashed)
+    drawStroke(reverseStart, reverseEnd, widthBA, colorBA, dashed)
 
     drawArrowhead(forwardStart, forwardEnd, colorAB, normAB)
     drawArrowhead(reverseStart, reverseEnd, colorBA, normBA)
