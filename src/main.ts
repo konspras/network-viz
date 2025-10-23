@@ -76,8 +76,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   }
 
   const updateTimeLabel = (t: number) => {
-    const ms = t * 1000
-    timeLabel.textContent = `t = ${ms.toFixed(2)} ms (${t.toFixed(6)} s)`
+    const micros = t * 1_000_000
+    timeLabel.textContent = `t = ${micros.toFixed(1)} µs (${t.toFixed(6)} s)`
   }
 
   let controller: VizController | null = null

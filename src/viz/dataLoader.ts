@@ -1,5 +1,5 @@
 import { makeLeafSpineLayout } from './topologies/leafSpine.ts'
-import type { Layout, LinkSnapshot, Snapshot, TimeSeriesDataSource } from './data.ts'
+import type { Layout, LinkSnapshot, Snapshot, TimeSeriesDataSource } from './types.ts'
 
 type DirectionSeries = {
   throughput: Float32Array
@@ -156,25 +156,23 @@ class CsvDataSource implements TimeSeriesDataSource {
 
       const aToB = this.interpolate(forwardSeries.throughput, idx, nextIdx, frac)
       const bToA = this.interpolate(reverseSeries.throughput, idx, nextIdx, frac)
-      const queueA = this.interpolate(forwardSeries.queue, idx, nextIdx, frac)
-      const queueB = this.interpolate(reverseSeries.queue, idx, nextIdx, frac)
+      const queueA = Math.max(0, this.interpolate(forwardSeries.queue, idx, nextIdx, frac))
+      const queueB = Math.max(0, this.interpolate(reverseSeries.queue, idx, nextIdx, frac))
 
-      const forwardValue = Math.min(1, Math.max(0, aToB))
-      const reverseValue = Math.min(1, Math.max(0, bToA))
-      const queueForward = Math.min(1, Math.max(0, queueA))
-      const queueReverse = Math.min(1, Math.max(0, queueB))
+      const forwardValue = Math.max(0, aToB)
+      const reverseValue = Math.max(0, bToA)
 
       links[link.id] = {
         aToB: forwardValue,
         bToA: reverseValue,
-        queueA: queueForward,
-        queueB: queueReverse,
+        queueA,
+        queueB,
       }
 
-      nodeQueueSum[link.a] += queueForward
+      nodeQueueSum[link.a] += queueA
       nodeQueueCount[link.a] += 1
 
-      nodeQueueSum[link.b] += queueReverse
+      nodeQueueSum[link.b] += queueB
       nodeQueueCount[link.b] += 1
     }
 
@@ -182,7 +180,7 @@ class CsvDataSource implements TimeSeriesDataSource {
     for (const node of this.layout.nodes) {
       const count = nodeQueueCount[node.id]
       const avg = count > 0 ? nodeQueueSum[node.id] / count : 0
-      nodes[node.id] = { queue: Math.min(1, Math.max(0, avg)) }
+      nodes[node.id] = { queue: Math.max(0, avg) }
     }
 
     return { t: clamped, links, nodes }

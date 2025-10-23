@@ -1,6 +1,6 @@
 import { Application, Container } from 'pixi.js'
 import { buildScene } from './scene.ts'
-import type { TimeSeriesDataSource } from './data.ts'
+import type { TimeSeriesDataSource } from './types.ts'
 
 export type VizOptions = {
   width: number
@@ -94,7 +94,7 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
     },
     isPlaying: () => playing,
     setSpeed: (s: number) => {
-      speed = Math.max(0.0001, Math.min(10, s))
+      speed = Math.max(0.00001, Math.min(10, s))
       console.log('[viz] speed updated', { speed })
     },
     resize: (w: number, h: number) => {

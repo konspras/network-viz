@@ -1,5 +1,5 @@
 import { Container, Graphics, Text, Rectangle } from 'pixi.js'
-import type { Layout, Snapshot, NodeDef, LinkDef, LinkSnapshot } from './data'
+import type { Layout, Snapshot, NodeDef, LinkDef, LinkSnapshot } from './types'
 
 export function buildScene(root: Container, layout: Layout) {
   // screen-space grid layer (infinite grid) + world container
@@ -23,6 +23,13 @@ export function buildScene(root: Container, layout: Layout) {
   const linkByEnds = new Map<string, LinkDef>()
   const torGeom = new Map<string, { left: number; right: number; top: number; bottom: number }>()
   const spineGeom = new Map<string, { left: number; right: number; top: number; bottom: number; anchors: Record<string, number> }>()
+  const queueLabelLayer = new Container()
+  labelsLayer.addChild(queueLabelLayer)
+  const queueLabels = new Map<string, Text>()
+  const queueLabelsUsed = new Set<string>()
+  const hostLabelLayer = new Container()
+  labelsLayer.addChild(hostLabelLayer)
+  const hostLabels = new Map<string, Text>()
 
   const margin = 60
   const toPx = (n: NodeDef) => {
@@ -38,6 +45,16 @@ export function buildScene(root: Container, layout: Layout) {
     const g = new Graphics()
     nodesLayer.addChild(g)
     nodeGfx.set(n.id, g)
+    if (n.type === 'host') {
+      const label = new Text({
+        text: `${n.metricsId}`,
+        style: { fill: 0xf8fafc, fontSize: 12, fontWeight: '700', stroke: { color: 0x111827, width: 2 } },
+        resolution: 3,
+      })
+      label.anchor.set(0.5)
+      hostLabelLayer.addChild(label)
+      hostLabels.set(n.id, label)
+    }
   }
   for (const l of layout.links) {
     linkByEnds.set(l.id, l)
@@ -82,18 +99,53 @@ export function buildScene(root: Container, layout: Layout) {
     gridLayer.stroke()
   }
 
+  const maxQueueKb = 1000
+
+  const nodeColors = {
+    host: 0x1f6feb,
+    tor: 0x2563eb,
+    spine: 0x0ea5e9,
+    switch: 0x334155,
+  }
+
+  function nodeFillColor(node: NodeDef): number {
+    if (node.type === 'host') return nodeColors.host
+    if (node.id.startsWith('tor')) return nodeColors.tor
+    if (node.id.startsWith('sp')) return nodeColors.spine
+    return nodeColors.switch
+  }
+
+  function useQueueLabel(key: string, x: number, y: number, value: number) {
+    let label = queueLabels.get(key)
+    if (!label) {
+      label = new Text({
+        text: '',
+        style: { fill: 0xf8fafc, fontSize: 11, fontWeight: '600' },
+        resolution: 3,
+      })
+      label.anchor.set(0.5, 1)
+      queueLabelLayer.addChild(label)
+      queueLabels.set(key, label)
+    }
+    queueLabelsUsed.add(key)
+    label.visible = true
+    label.position.set(x, y)
+    const rounded = Math.max(0, Math.round(value))
+    label.text = `${rounded}`
+  }
+
   function drawNode(id: string, queue: number, _timeSec: number, snapshot: Snapshot) {
     const n = layout.nodes.find((x) => x.id === id)!
     const p = positions.get(id)!
     const g = nodeGfx.get(id)!
     g.clear()
-    const fill = lerpColor(0x1f6feb, 0xeb3b5a, queue)
+    const fill = nodeFillColor(n)
     const strokeW = 2 / scale
     const getLinkQueue = (link: LinkDef, sourceId: string) => {
       const snap = snapshot.links[link.id]
       if (!snap) return 0
-      if (link.a === sourceId) return clamp01(snap.queueA ?? 0)
-      if (link.b === sourceId) return clamp01(snap.queueB ?? 0)
+      if (link.a === sourceId) return Math.max(0, snap.queueA ?? 0)
+      if (link.b === sourceId) return Math.max(0, snap.queueB ?? 0)
       return 0
     }
     if (n.type === 'switch') {
@@ -121,7 +173,7 @@ export function buildScene(root: Container, layout: Layout) {
           left = minS - padX
           right = maxS + padX
         }
-        const h = 32
+        const h = 44
         const top = p.y - h / 2
         const bottom = p.y + h / 2
         // Save geometry for link alignment
@@ -130,7 +182,8 @@ export function buildScene(root: Container, layout: Layout) {
         g.roundRect(left, top, right - left, h, 4).fill({ color: fill, alpha: 0.95 }).stroke({ color: 0x0, width: strokeW, alpha: 0.5 })
         // Per-link egress queues inside ToR aligned over each server
         if (serverIds.length) {
-          const innerTop = top + 6
+          const labelY = top + 11
+          const innerTop = labelY + 6
           const innerBottom = bottom - 4
           const innerHeight = Math.max(6, innerBottom - innerTop)
           // Determine reasonable bar width based on spacing
@@ -147,8 +200,9 @@ export function buildScene(root: Container, layout: Layout) {
             // background
             g.roundRect(bx, innerTop, barW, innerHeight, 2).fill({ color: 0x1e2430, alpha: 0.9 })
             // fill from bottom up
-            const filledH = innerHeight * clamp01(qLevel)
+            const filledH = innerHeight * clamp01(qLevel / maxQueueKb)
             g.roundRect(bx, by - filledH, barW, filledH, 2).fill({ color: 0xffb020, alpha: 0.95 })
+            useQueueLabel(`${id}:${sid}`, cx, labelY, Math.min(qLevel, maxQueueKb))
           }
         }
       } else {
@@ -161,7 +215,7 @@ export function buildScene(root: Container, layout: Layout) {
         const width = span / Math.max(1, torIds.length)
         const left = p.x - width / 2
         const right = p.x + width / 2
-        const h = 28
+        const h = 42
         const top = p.y - h / 2
         const bottom = p.y + h / 2
         g.roundRect(left, top, right - left, h, 4).fill({ color: fill, alpha: 0.95 }).stroke({ color: 0x0, width: strokeW, alpha: 0.5 })
@@ -189,7 +243,8 @@ export function buildScene(root: Container, layout: Layout) {
 
         // queues aligned above each ToR using shared anchors
         const barWidth = Math.min(16, Math.max(6, usableWidth / Math.max(1, sortedTorIds.length)))
-        const innerTop = top + 5
+        const labelY = top + 10
+        const innerTop = labelY + 6
         const innerBottom = bottom - 4
         const innerHeight = Math.max(6, innerBottom - innerTop)
         sortedTorIds.forEach((tid) => {
@@ -199,8 +254,9 @@ export function buildScene(root: Container, layout: Layout) {
           const barLeft = safeCenter - barWidth / 2
           const qLevel = link ? getLinkQueue(link, id) : 0
           g.roundRect(barLeft, innerTop, barWidth, innerHeight, 2).fill({ color: 0x1e2430, alpha: 0.9 })
-          const filledH = innerHeight * clamp01(qLevel)
+          const filledH = innerHeight * clamp01(qLevel / maxQueueKb)
           g.roundRect(barLeft, innerBottom - filledH, barWidth, filledH, 2).fill({ color: 0x2dd4bf, alpha: 0.95 })
+          useQueueLabel(`${id}:${tid}`, safeCenter, labelY, Math.min(qLevel, maxQueueKb))
         })
       }
     } else {
@@ -212,7 +268,12 @@ export function buildScene(root: Container, layout: Layout) {
       const bx = p.x - barW / 2
       const by = p.y + radius + 6
       g.roundRect(bx, by, barW, barH, 3).fill({ color: 0x2a2e35, alpha: 0.8 })
-      g.roundRect(bx, by, barW * clamp01(queue), barH, 3).fill({ color: 0xff9f43, alpha: 0.9 })
+      g.roundRect(bx, by, barW * clamp01(queue / maxQueueKb), barH, 3).fill({ color: 0xff9f43, alpha: 0.9 })
+      const label = hostLabels.get(id)
+      if (label) {
+        label.visible = true
+        label.position.set(p.x, p.y)
+      }
     }
     // no per-node label
   }
@@ -224,12 +285,23 @@ export function buildScene(root: Container, layout: Layout) {
     const g = linkGfx.get(id)!
     g.clear()
 
-    const valueAB = clamp01(usage?.aToB ?? 0)
-    const valueBA = clamp01(usage?.bToA ?? 0)
-
-    // If tor-host link, start at bottom edge of ToR aligned to server x
     const aNode = layout.nodes.find(n => n.id === l.a)!
     const bNode = layout.nodes.find(n => n.id === l.b)!
+
+    const rawAB = Math.max(0, usage?.aToB ?? 0)
+    const rawBA = Math.max(0, usage?.bToA ?? 0)
+
+    const linkCapacityGbps = () => {
+      const kinds = `${aNode.metricsKind}-${bNode.metricsKind}`
+      if (kinds.includes('host')) return 100
+      return 800
+    }
+
+    const cap = linkCapacityGbps()
+    const normAB = clamp01(cap > 0 ? rawAB / cap : 0)
+    const normBA = clamp01(cap > 0 ? rawBA / cap : 0)
+
+    // If tor-host link, start at bottom edge of ToR aligned to server x
     const hostRadius = 10
     if (aNode.type === 'switch' && aNode.id.startsWith('tor') && bNode.type === 'host') {
       const geom = torGeom.get(aNode.id)
@@ -282,11 +354,6 @@ export function buildScene(root: Container, layout: Layout) {
     }
 
     // Center guide for context
-    const baseWidth = 1 / scale
-    if (baseWidth > 0.0001) {
-      g.moveTo(a.x, a.y).lineTo(b.x, b.y).stroke({ width: baseWidth, color: 0x1f2937, alpha: 0.6 })
-    }
-
     const dx = b.x - a.x
     const dy = b.y - a.y
     const len = Math.hypot(dx, dy) || 1
@@ -299,16 +366,23 @@ export function buildScene(root: Container, layout: Layout) {
     const reverseStart = { x: b.x - nx * separation, y: b.y - ny * separation }
     const reverseEnd = { x: a.x - nx * separation, y: a.y - ny * separation }
 
-    const widthAB = (1.5 + 4.5 * valueAB) / scale
-    const widthBA = (1.5 + 4.5 * valueBA) / scale
-    const colorAB = lerpColor(0x383f4c, 0x22c55e, valueAB)
-    const colorBA = lerpColor(0x383f4c, 0x22c55e, valueBA)
+    const widthAB = (0.8 + 5 * normAB) / scale
+    const widthBA = (0.8 + 5 * normBA) / scale
+
+    const colorFor = (u: number) => {
+      if (u <= 0.01) return 0x374151
+      if (u < 0.6) return lerpColor(0x22c55e, 0xf97316, (u - 0.01) / 0.59)
+      return lerpColor(0xf97316, 0xef4444, (u - 0.6) / 0.4)
+    }
+
+    const colorAB = colorFor(normAB)
+    const colorBA = colorFor(normBA)
 
     g.moveTo(forwardStart.x, forwardStart.y).lineTo(forwardEnd.x, forwardEnd.y).stroke({ width: widthAB, color: colorAB, alpha: 0.95, cap: 'round' })
     g.moveTo(reverseStart.x, reverseStart.y).lineTo(reverseEnd.x, reverseEnd.y).stroke({ width: widthBA, color: colorBA, alpha: 0.95, cap: 'round' })
 
-    drawArrowhead(forwardStart, forwardEnd, colorAB, valueAB)
-    drawArrowhead(reverseStart, reverseEnd, colorBA, valueBA)
+    drawArrowhead(forwardStart, forwardEnd, colorAB, normAB)
+    drawArrowhead(reverseStart, reverseEnd, colorBA, normBA)
 
     function drawArrowhead(from: { x: number; y: number }, to: { x: number; y: number }, color: number, magnitude: number) {
       const arrowLen = (9 + 5 * magnitude) / scale
@@ -331,12 +405,19 @@ export function buildScene(root: Container, layout: Layout) {
   // Packets removed
 
   function update(snapshot: Snapshot) {
+    queueLabelsUsed.clear()
+    for (const label of hostLabels.values()) label.visible = false
     for (const l of layout.links) {
       drawLink(l.id, snapshot.links[l.id])
     }
     for (const n of layout.nodes) {
       const q = snapshot.nodes[n.id]?.queue ?? 0
       drawNode(n.id, q, snapshot.t, snapshot)
+    }
+    for (const [key, label] of queueLabels) {
+      if (!queueLabelsUsed.has(key)) {
+        label.visible = false
+      }
     }
     // no packet movement
   }
@@ -353,6 +434,10 @@ export function buildScene(root: Container, layout: Layout) {
     for (const n of layout.nodes) {
       const p = toPx(n)
       positions.set(n.id, p)
+      const hostLabel = hostLabels.get(n.id)
+      if (hostLabel) {
+        hostLabel.position.set(p.x, p.y)
+      }
     }
     placeTierLabels()
     drawGridScreen()

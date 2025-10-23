@@ -1,4 +1,4 @@
-import type { Layout, NodeDef, LinkDef } from '../data.ts'
+import type { Layout, NodeDef, LinkDef } from '../types.ts'
 
 export function makeLeafSpineLayout(): Layout {
   const nodes: NodeDef[] = []
