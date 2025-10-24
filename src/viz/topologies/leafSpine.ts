@@ -29,8 +29,8 @@ export function makeLeafSpineLayout(): Layout {
 
   // Two ToRs in the middle
   const tors: NodeDef[] = [
-    { id: 'tor1', type: 'switch', metricsId: 32, metricsKind: 'tor', x: 0.3, y: 0.36 },
-    { id: 'tor2', type: 'switch', metricsId: 33, metricsKind: 'tor', x: 0.7, y: 0.36 },
+    { id: 'tor1', type: 'switch', metricsId: 32, metricsKind: 'tor', x: 0.28, y: 0.36 },
+    { id: 'tor2', type: 'switch', metricsId: 33, metricsKind: 'tor', x: 0.72, y: 0.36 },
   ]
   nodes.push(...tors)
 
@@ -38,8 +38,8 @@ export function makeLeafSpineLayout(): Layout {
   const countPerRack: number = 16
   const yHosts = 0.62
   const line1Start = 0.08
-  const line1End = 0.48
-  const line2Start = 0.52
+  const line1End = 0.45
+  const line2Start = 0.55
   const line2End = 0.92
   const servers1: NodeDef[] = []
   let hostMetricsId = 0

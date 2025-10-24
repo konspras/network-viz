@@ -16,6 +16,7 @@ export function buildScene(root: Container, layout: Layout) {
   world.addChild(linksLayer, nodesLayer, packetsLayer, labelsLayer)
 
   const size = { width: 800, height: 600 }
+  const worldSize = { width: 1400, height: 880 }
   root.hitArea = new Rectangle(0, 0, size.width, size.height)
   const positions = new Map<string, { x: number; y: number }>()
   const nodeGfx = new Map<string, Graphics>()
@@ -33,8 +34,10 @@ export function buildScene(root: Container, layout: Layout) {
 
   const margin = 60
   const toPx = (n: NodeDef) => {
-    const x = margin + n.x * Math.max(100, size.width - margin * 2)
-    const y = margin + n.y * Math.max(100, size.height - margin * 2)
+    const usableWidth = Math.max(100, worldSize.width - margin * 2)
+    const usableHeight = Math.max(100, worldSize.height - margin * 2)
+    const x = margin + n.x * usableWidth
+    const y = margin + n.y * usableHeight
     return { x, y }
   }
 
@@ -129,7 +132,7 @@ export function buildScene(root: Container, layout: Layout) {
     return nodeColors.switch
   }
 
-  function useQueueLabel(key: string, x: number, y: number, value: number) {
+  function useQueueLabel(key: string, x: number, y: number, value: number, anchorY = 1) {
     let label = queueLabels.get(key)
     if (!label) {
       label = new Text({
@@ -137,12 +140,12 @@ export function buildScene(root: Container, layout: Layout) {
         style: { fill: 0xf8fafc, fontSize: 11, fontWeight: '600' },
         resolution: 3,
       })
-      label.anchor.set(0.5, 1)
       queueLabelLayer.addChild(label)
       queueLabels.set(key, label)
     }
     queueLabelsUsed.add(key)
     label.visible = true
+    label.anchor.set(0.5, anchorY)
     label.position.set(x, y)
     const rounded = Math.max(0, Math.round(value))
     label.text = `${rounded}`
@@ -154,7 +157,7 @@ export function buildScene(root: Container, layout: Layout) {
     const g = nodeGfx.get(id)!
     g.clear()
     const fill = nodeFillColor(n)
-    const strokeW = 2 / scale
+    const strokeW = 2
     const getLinkQueue = (link: LinkDef, sourceId: string) => {
       const snap = snapshot.links[link.id]
       if (!snap) return 0
@@ -183,7 +186,7 @@ export function buildScene(root: Container, layout: Layout) {
           const xs = serverIds.map(sid => positions.get(sid)!.x)
           const minS = Math.min(...xs)
           const maxS = Math.max(...xs)
-          const padX = 15
+          const padX = 26
           left = minS - padX
           right = maxS + padX
         }
@@ -195,7 +198,7 @@ export function buildScene(root: Container, layout: Layout) {
         // Save geometry for link alignment
         torGeom.set(id, { left, right, top, bottom })
         // Draw ToR body
-        g.roundRect(left, top, right - left, h, 4).fill({ color: fill, alpha: 0.95 }).stroke({ color: 0x0, width: strokeW, alpha: 0.5 })
+        g.roundRect(left, top, right - left, h, 4).fill({ color: fill }).stroke({ color: 0x0, width: strokeW })
         // Per-link egress queues inside ToR aligned over each server
         if (serverIds.length) {
           const labelY = top + 11
@@ -207,7 +210,9 @@ export function buildScene(root: Container, layout: Layout) {
           const queueTop = innerTop + queueOffset
           const queueBottom = queueTop + queueHeightTarget
           const contentWidth = Math.max(0, right - left - 12)
-          const barW = Math.min(16, Math.max(6, contentWidth / Math.max(1, serverIds.length)))
+          const maxHosts = Math.max(1, serverIds.length)
+          const baseWidth = contentWidth / maxHosts
+          const barW = Math.min(28, Math.max(6, baseWidth * 1.5))
           for (const sid of serverIds) {
             const link = layout.links.find(l => (l.a === sid && l.b === id) || (l.b === sid && l.a === id))!
             const qLevel = getLinkQueue(link, id)
@@ -219,7 +224,7 @@ export function buildScene(root: Container, layout: Layout) {
             const norm = clamp01(qLevel / maxQueueKb)
             const filledH = queueHeightTarget * norm
             g.roundRect(bx, queueBottom - filledH, barW, filledH, 2).fill({ color: colorForQueueUsage(norm), alpha: 0.95 })
-            useQueueLabel(`${id}:${sid}`, cx, labelY, Math.min(qLevel, maxQueueKb))
+            useQueueLabel(`${id}:${sid}`, cx, queueTop + queueHeightTarget / 2, Math.min(qLevel, maxQueueKb), 0.5)
           }
         }
       } else {
@@ -237,7 +242,7 @@ export function buildScene(root: Container, layout: Layout) {
         const h = spineBaseHeight * 2
         const top = p.y - h / 2
         const bottom = p.y + h / 2
-        g.roundRect(left, top, right - left, h, 4).fill({ color: fill, alpha: 0.95 }).stroke({ color: 0x0, width: strokeW, alpha: 0.5 })
+        g.roundRect(left, top, right - left, h, 4).fill({ color: fill }).stroke({ color: 0x0, width: strokeW })
 
         const sortedTorIds = torIds.slice().sort((a, b) => positions.get(a)!.x - positions.get(b)!.x)
         const spanWidth = right - left
@@ -261,7 +266,9 @@ export function buildScene(root: Container, layout: Layout) {
         spineGeom.set(id, { left, right, top, bottom, anchors })
 
         // queues aligned above each ToR using shared anchors
-        const barWidth = Math.min(16, Math.max(6, usableWidth / Math.max(1, sortedTorIds.length)))
+        const maxTors = Math.max(1, sortedTorIds.length)
+        const baseBarWidth = usableWidth / maxTors
+        const barWidth = Math.min(28, Math.max(6, baseBarWidth * 1.5))
         const labelY = top + 10
         const innerTop = labelY + 6
         const innerBottom = bottom - 4
@@ -280,12 +287,12 @@ export function buildScene(root: Container, layout: Layout) {
           const norm = clamp01(qLevel / maxQueueKb)
           const filledH = queueHeightTarget * norm
           g.roundRect(barLeft, queueBottom - filledH, barWidth, filledH, 2).fill({ color: colorForQueueUsage(norm), alpha: 0.95 })
-          useQueueLabel(`${id}:${tid}`, safeCenter, labelY, Math.min(qLevel, maxQueueKb))
+          useQueueLabel(`${id}:${tid}`, safeCenter, queueTop + queueHeightTarget / 2, Math.min(qLevel, maxQueueKb), 0.5)
         })
       }
     } else {
       const radius = 14
-      g.circle(p.x, p.y, radius).fill({ color: fill, alpha: 0.95 }).stroke({ color: 0x0, width: strokeW, alpha: 0.4 })
+      g.circle(p.x, p.y, radius).fill({ color: fill }).stroke({ color: 0x0, width: strokeW })
       // queue bar underneath (matches switch styling, vertical fill)
       const barW = 14
       const barH = 32
@@ -296,6 +303,21 @@ export function buildScene(root: Container, layout: Layout) {
       const norm = clamp01(queue / maxQueueKb)
       const filledH = barH * norm
       g.roundRect(bx, bottom - filledH, barW, filledH, 3).fill({ color: colorForQueueUsage(norm), alpha: 0.95 })
+      const bucketSpacing = 6
+      const bucketWidth = barW + 4
+      const bucketLeft = p.x - bucketWidth / 2
+      const bucketTop = bottom + bucketSpacing
+      const bucketHeight = barH
+      const bucketRadius = 4
+      const bucketStroke = { color: 0xcbd5f5, width: 2, alpha: 0.85 } as const
+      g.roundRect(bucketLeft, bucketTop, bucketWidth, bucketHeight, bucketRadius).stroke(bucketStroke)
+      const handleWidth = Math.max(6, bucketWidth * 0.6)
+      const handleLeft = bucketLeft + (bucketWidth - handleWidth) / 2
+      const handleRight = handleLeft + handleWidth
+      const handleTop = bucketTop - 6
+      g.moveTo(handleLeft, bucketTop)
+      g.quadraticCurveTo(bucketLeft + bucketWidth / 2, handleTop, handleRight, bucketTop)
+      g.stroke(bucketStroke)
       const label = hostLabels.get(id)
       if (label) {
         label.visible = true
@@ -393,21 +415,21 @@ export function buildScene(root: Container, layout: Layout) {
     const len = Math.hypot(dx, dy) || 1
     const nx = (-dy / len)
     const ny = (dx / len)
-    const separation = 6 / scale
+    const separation = 6
 
     const forwardStart = { x: a.x + nx * separation, y: a.y + ny * separation }
     const forwardEnd = { x: b.x + nx * separation, y: b.y + ny * separation }
     const reverseStart = { x: b.x - nx * separation, y: b.y - ny * separation }
     const reverseEnd = { x: a.x - nx * separation, y: a.y - ny * separation }
 
-    const widthAB = (2.4 + 9.5 * normAB) / scale
-    const widthBA = (2.4 + 9.5 * normBA) / scale
+    const widthAB = 2.4 + 9.5 * normAB
+    const widthBA = 2.4 + 9.5 * normBA
 
     const colorAB = colorForLinkUsage(normAB)
     const colorBA = colorForLinkUsage(normBA)
 
-    const dashLength = 18 / scale
-    const gapLength = 10 / scale
+    const dashLength = 18
+    const gapLength = 10
 
     const drawStroke = (start: { x: number; y: number }, end: { x: number; y: number }, width: number, color: number, dashed: boolean) => {
       if (!dashed) {
@@ -447,8 +469,8 @@ export function buildScene(root: Container, layout: Layout) {
       magnitude: number,
       strokeWidth: number,
     ) {
-      const baseLen = (7 + 5 * magnitude) / scale
-      const widthScaled = Math.max(strokeWidth * 1.6, 5 / scale)
+      const baseLen = 7 + 5 * magnitude
+      const widthScaled = Math.max(strokeWidth * 1.6, 5)
       const arrowLen = Math.max(baseLen, widthScaled)
       const arrowWidth = Math.max(arrowLen * 0.55, strokeWidth * 1.2)
       const angle = Math.atan2(to.y - from.y, to.x - from.x)
@@ -490,11 +512,13 @@ export function buildScene(root: Container, layout: Layout) {
     // nothing to reset (packets removed)
   }
 
+  let autoFitApplied = false
+
   function layoutResize(w: number, h: number) {
     size.width = w
     size.height = h
     root.hitArea = new Rectangle(0, 0, size.width, size.height)
-    // Recompute projected positions
+    // Recompute projected positions (world coordinates remain constant)
     for (const n of layout.nodes) {
       const p = toPx(n)
       positions.set(n.id, p)
@@ -504,21 +528,27 @@ export function buildScene(root: Container, layout: Layout) {
       }
     }
     placeTierLabels()
-    drawGridScreen()
-    // Update min zoom to fit entire topology
-    const { minX, minY, maxX, maxY } = computeBounds()
+    const { minX, minY, maxX, maxY } = getClampBounds()
     const worldW = maxX - minX
     const worldH = maxY - minY
-    const fitScale = Math.min(size.width / worldW, size.height / worldH)
-    minScale = Math.min(1, fitScale)
-    // Clamp/adjust current zoom and center the world
-    scale = Math.max(scale, minScale)
-    world.scale.set(scale)
-    const worldCenterX = (minX + maxX) / 2
-    const worldCenterY = (minY + maxY) / 2
-    const viewCenterX = size.width / 2
-    const viewCenterY = size.height / 2
-    world.position.set(viewCenterX - worldCenterX * scale, viewCenterY - worldCenterY * scale)
+    const ratioW = worldW > 0 ? size.width / worldW : 1
+    const ratioH = worldH > 0 ? size.height / worldH : 1
+    const fitScaleRaw = Math.max(ratioW, ratioH)
+    const fitScale = fitScaleRaw > 0 ? Math.min(1, fitScaleRaw) : 1
+    minScale = Math.min(maxScale, fitScale)
+    if (!autoFitApplied) {
+      scale = minScale
+      world.scale.set(scale)
+      const worldCenterX = (minX + maxX) / 2
+      const worldCenterY = (minY + maxY) / 2
+      const viewCenterX = size.width / 2
+      const viewCenterY = size.height / 2
+      world.position.set(viewCenterX - worldCenterX * scale, viewCenterY - worldCenterY * scale)
+      autoFitApplied = true
+    } else {
+      scale = Math.max(scale, minScale)
+      world.scale.set(scale)
+    }
     clampWorld()
     drawGridScreen()
   }
@@ -557,7 +587,7 @@ export function buildScene(root: Container, layout: Layout) {
   let lastX = 0, lastY = 0
 
   // Clamp view to extended bounds (finite background larger than topology)
-  const clampPad = 120
+  const clampPad = 600
   function getClampBounds() {
     const b = computeBounds()
     return { minX: b.minX - clampPad, minY: b.minY - clampPad, maxX: b.maxX + clampPad, maxY: b.maxY + clampPad }
@@ -590,7 +620,7 @@ export function buildScene(root: Container, layout: Layout) {
     // smooth exponential zoom
     const zoom = Math.exp(-e.deltaY * 0.0015)
     const oldScale = scale
-  scale = Math.min(maxScale, Math.max(minScale, scale * zoom))
+    scale = Math.min(maxScale, Math.max(minScale, scale * zoom))
     const factor = scale / oldScale
     // zoom towards mouse point: adjust world position
     const mx = e.globalX

@@ -77,7 +77,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   const exponentMax = Math.log10(denomMax)
   const numberFormatter = new Intl.NumberFormat('en-US')
 
-  let currentExponent = Math.min(exponentMax, Math.max(exponentMin, Number(speedInput?.value) || 3))
+  let currentExponent = Math.min(exponentMax, Math.max(exponentMin, Number(speedInput?.value) || 5))
   let currentDenom = 0
 
   const exponentToDenom = (exp: number) => {
