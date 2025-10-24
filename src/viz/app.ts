@@ -94,8 +94,9 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
     },
     isPlaying: () => playing,
     setSpeed: (s: number) => {
-      speed = Math.max(0.00001, Math.min(10, s))
-      console.log('[viz] speed updated', { speed })
+      const minSpeed = 1e-9
+      speed = Math.max(minSpeed, Math.min(10, s))
+      console.log('[viz] speed updated', { input: s, clamped: speed })
     },
     resize: (w: number, h: number) => {
       app.renderer.resize(w, h)

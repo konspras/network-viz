@@ -84,14 +84,10 @@ class CsvDataSource implements TimeSeriesDataSource {
     this.layout = layout
     this.timestamps = timestamps
     this.linkSeries = series
-    console.log('[viz] timestamps (tail)', {
-      length: timestamps.length,
-      last5: Array.from(timestamps.slice(Math.max(0, timestamps.length - 5))).map((x) => Number(x.toFixed(12))),
-    })
     let duration = 0
     if (timestamps.length) {
       duration = timestamps[timestamps.length - 1]
-      console.log('[viz] last timestamp', duration)
+      console.log('[viz] last timestamp:', duration)
       if (!(duration > 0)) {
         for (let i = 0; i < timestamps.length; i++) {
           if (timestamps[i] > duration) duration = timestamps[i]
@@ -100,7 +96,6 @@ class CsvDataSource implements TimeSeriesDataSource {
       }
     }
     this.duration = duration
-    console.log('[viz] CsvDataSource ready', { samples: timestamps.length, duration: this.duration })
   }
 
   reset(): void {
@@ -211,7 +206,6 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
     const dirPath = joinUrlSegments(basePath, startKind)
     const fileName = `qts_${startKind}_${startId}_${endKind}_${endId}.csv`
     const url = `${dirPath}/${fileName}`
-    console.log('[viz] Fetching CSV', url)
     const response = await fetch(url)
     if (!response.ok) {
       if (!timestamps) {
@@ -221,7 +215,7 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
       return createZeroSeries(timestamps.length)
     }
     const text = await response.text()
-    console.log('[viz] CSV bytes', { url, length: text.length })
+    console.log('[viz] Fetched CSV bytes', { url, length: text.length })
     const parsed = parseCsv(text, timestamps)
     if (!timestamps) {
       if (!parsed.timestamps) {

@@ -36,7 +36,7 @@ export function makeLeafSpineLayout(): Layout {
 
   // Two racks of 16 servers each in a single horizontal line near the bottom
   const countPerRack: number = 16
-  const yHosts = 0.82
+  const yHosts = 0.62
   const line1Start = 0.08
   const line1End = 0.48
   const line2Start = 0.52
@@ -67,6 +67,22 @@ export function makeLeafSpineLayout(): Layout {
     addLink('tor1', sp.id)
     addLink('tor2', sp.id)
   }
+
+  console.log('[leafSpine] Topology', {
+    nodes: nodes.map((node) => ({
+      id: node.id,
+      type: node.type,
+      metricsId: node.metricsId,
+      metricsKind: node.metricsKind,
+      x: Number(node.x.toFixed(3)),
+      y: Number(node.y.toFixed(3)),
+    })),
+    links: links.map((link) => ({
+      id: link.id,
+      endpoints: { a: link.a, b: link.b },
+      metrics: link.metrics,
+    })),
+  })
 
   return { nodes, links }
 }

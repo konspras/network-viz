@@ -108,6 +108,20 @@ export function buildScene(root: Container, layout: Layout) {
     switch: 0x374151,
   }
 
+  const colorForLinkUsage = (u: number) => {
+    const value = clamp01(u)
+    if (value <= 0.01) return 0xcbd5e1
+    if (value < 0.6) return lerpColor(0x22c55e, 0xf97316, (value - 0.01) / 0.59)
+    return lerpColor(0xf97316, 0xef4444, (value - 0.6) / 0.4)
+  }
+
+  const colorForQueueUsage = (u: number) => {
+    const value = clamp01(u)
+    if (value <= 0.0) return 0xffe0b8
+    if (value < 0.6) return lerpColor(0xffc777, 0xf97316, value / 0.6)
+    return lerpColor(0xf97316, 0xef4444, (value - 0.6) / 0.4)
+  }
+
   function nodeFillColor(node: NodeDef): number {
     if (node.type === 'host') return nodeColors.host
     if (node.id.startsWith('tor')) return nodeColors.tor
@@ -173,7 +187,9 @@ export function buildScene(root: Container, layout: Layout) {
           left = minS - padX
           right = maxS + padX
         }
-        const h = 44
+        const torBaseHeight = 44
+        const torQueueBaseHeight = torBaseHeight - 21
+        const h = torBaseHeight * 2
         const top = p.y - h / 2
         const bottom = p.y + h / 2
         // Save geometry for link alignment
@@ -185,23 +201,24 @@ export function buildScene(root: Container, layout: Layout) {
           const labelY = top + 11
           const innerTop = labelY + 6
           const innerBottom = bottom - 4
-          const innerHeight = Math.max(6, innerBottom - innerTop)
-          // Determine reasonable bar width based on spacing
-          const sorted = serverIds.map(sid => positions.get(sid)!.x).sort((a,b)=>a-b)
-          let spacing = 10
-          for (let i=1;i<sorted.length;i++) spacing = Math.max(spacing, sorted[i]-sorted[i-1])
-          const barW = Math.min(10, Math.max(4, spacing * 0.35))
+          const innerHeightRaw = Math.max(6, innerBottom - innerTop)
+          const queueHeightTarget = Math.min(innerHeightRaw, torQueueBaseHeight * 2)
+          const queueOffset = (innerHeightRaw - queueHeightTarget) / 2
+          const queueTop = innerTop + queueOffset
+          const queueBottom = queueTop + queueHeightTarget
+          const contentWidth = Math.max(0, right - left - 12)
+          const barW = Math.min(16, Math.max(6, contentWidth / Math.max(1, serverIds.length)))
           for (const sid of serverIds) {
             const link = layout.links.find(l => (l.a === sid && l.b === id) || (l.b === sid && l.a === id))!
             const qLevel = getLinkQueue(link, id)
             const cx = Math.min(Math.max(positions.get(sid)!.x, left + 2), right - 2)
-            const bx = cx - barW/2
-            const by = innerBottom
+            const bx = cx - barW / 2
             // background
-            g.roundRect(bx, innerTop, barW, innerHeight, 2).fill({ color: 0x1e2430, alpha: 0.9 })
+            g.roundRect(bx, queueTop, barW, queueHeightTarget, 2).fill({ color: 0x1e2430, alpha: 0.9 })
             // fill from bottom up
-            const filledH = innerHeight * clamp01(qLevel / maxQueueKb)
-            g.roundRect(bx, by - filledH, barW, filledH, 2).fill({ color: 0xffb020, alpha: 0.95 })
+            const norm = clamp01(qLevel / maxQueueKb)
+            const filledH = queueHeightTarget * norm
+            g.roundRect(bx, queueBottom - filledH, barW, filledH, 2).fill({ color: colorForQueueUsage(norm), alpha: 0.95 })
             useQueueLabel(`${id}:${sid}`, cx, labelY, Math.min(qLevel, maxQueueKb))
           }
         }
@@ -215,7 +232,9 @@ export function buildScene(root: Container, layout: Layout) {
         const width = span / Math.max(1, torIds.length)
         const left = p.x - width / 2
         const right = p.x + width / 2
-        const h = 42
+        const spineBaseHeight = 42
+        const spineQueueBaseHeight = spineBaseHeight - 20
+        const h = spineBaseHeight * 2
         const top = p.y - h / 2
         const bottom = p.y + h / 2
         g.roundRect(left, top, right - left, h, 4).fill({ color: fill, alpha: 0.95 }).stroke({ color: 0x0, width: strokeW, alpha: 0.5 })
@@ -246,29 +265,37 @@ export function buildScene(root: Container, layout: Layout) {
         const labelY = top + 10
         const innerTop = labelY + 6
         const innerBottom = bottom - 4
-        const innerHeight = Math.max(6, innerBottom - innerTop)
+        const innerHeightRaw = Math.max(6, innerBottom - innerTop)
+        const queueHeightTarget = Math.min(innerHeightRaw, spineQueueBaseHeight * 2)
+        const queueOffset = (innerHeightRaw - queueHeightTarget) / 2
+        const queueTop = innerTop + queueOffset
+        const queueBottom = queueTop + queueHeightTarget
         sortedTorIds.forEach((tid) => {
           const link = layout.links.find(l => (l.a === tid && l.b === id) || (l.b === tid && l.a === id))
           const anchorCenter = anchors[tid] ?? (left + spanWidth / 2)
           const safeCenter = Math.min(Math.max(anchorCenter, left + barWidth / 2 + 4), right - barWidth / 2 - 4)
           const barLeft = safeCenter - barWidth / 2
           const qLevel = link ? getLinkQueue(link, id) : 0
-          g.roundRect(barLeft, innerTop, barWidth, innerHeight, 2).fill({ color: 0x1e2430, alpha: 0.9 })
-          const filledH = innerHeight * clamp01(qLevel / maxQueueKb)
-          g.roundRect(barLeft, innerBottom - filledH, barWidth, filledH, 2).fill({ color: 0x2dd4bf, alpha: 0.95 })
+          g.roundRect(barLeft, queueTop, barWidth, queueHeightTarget, 2).fill({ color: 0x1e2430, alpha: 0.9 })
+          const norm = clamp01(qLevel / maxQueueKb)
+          const filledH = queueHeightTarget * norm
+          g.roundRect(barLeft, queueBottom - filledH, barWidth, filledH, 2).fill({ color: colorForQueueUsage(norm), alpha: 0.95 })
           useQueueLabel(`${id}:${tid}`, safeCenter, labelY, Math.min(qLevel, maxQueueKb))
         })
       }
     } else {
       const radius = 14
-  g.circle(p.x, p.y, radius).fill({ color: fill, alpha: 0.95 }).stroke({ color: 0x0, width: strokeW, alpha: 0.4 })
-      // queue bar underneath
-      const barW = 40
-      const barH = 5
+      g.circle(p.x, p.y, radius).fill({ color: fill, alpha: 0.95 }).stroke({ color: 0x0, width: strokeW, alpha: 0.4 })
+      // queue bar underneath (matches switch styling, vertical fill)
+      const barW = 14
+      const barH = 32
+      const top = p.y + radius + 6
+      const bottom = top + barH
       const bx = p.x - barW / 2
-      const by = p.y + radius + 6
-      g.roundRect(bx, by, barW, barH, 3).fill({ color: 0x2a2e35, alpha: 0.8 })
-      g.roundRect(bx, by, barW * clamp01(queue / maxQueueKb), barH, 3).fill({ color: 0xff9f43, alpha: 0.9 })
+      g.roundRect(bx, top, barW, barH, 3).fill({ color: 0x1e2430, alpha: 0.9 })
+      const norm = clamp01(queue / maxQueueKb)
+      const filledH = barH * norm
+      g.roundRect(bx, bottom - filledH, barW, filledH, 3).fill({ color: colorForQueueUsage(norm), alpha: 0.95 })
       const label = hostLabels.get(id)
       if (label) {
         label.visible = true
@@ -300,22 +327,13 @@ export function buildScene(root: Container, layout: Layout) {
     const cap = linkCapacityGbps()
     const normAB = clamp01(cap > 0 ? rawAB / cap : 0)
     const normBA = clamp01(cap > 0 ? rawBA / cap : 0)
-    const isHostTor = (aNode.metricsKind === 'host' && bNode.metricsKind === 'tor') || (aNode.metricsKind === 'tor' && bNode.metricsKind === 'host')
-    const isTorAggr = (aNode.metricsKind === 'tor' && bNode.metricsKind === 'aggr') || (aNode.metricsKind === 'aggr' && bNode.metricsKind === 'tor')
-    const dashed = (isHostTor || isTorAggr) && false
-    if (dashed) {
-      console.log('[viz] dashed link', {
-        id,
-        fromId: aNode.id,
-        fromKind: aNode.metricsKind,
-        toId: bNode.id,
-        toKind: bNode.metricsKind,
-        isHostTor,
-        isTorAggr,
-        normAB,
-        normBA,
-      })
+    const isUplink = (from: NodeDef, to: NodeDef) => {
+      if (from.metricsKind === 'host' && to.metricsKind === 'tor') return true
+      if (from.metricsKind === 'tor' && to.metricsKind === 'aggr') return true
+      return false
     }
+    const dashedForward = isUplink(aNode, bNode)
+    const dashedReverse = isUplink(bNode, aNode)
 
     // If tor-host link, start at bottom edge of ToR aligned to server x
     const hostRadius = 10
@@ -385,14 +403,8 @@ export function buildScene(root: Container, layout: Layout) {
     const widthAB = (2.4 + 9.5 * normAB) / scale
     const widthBA = (2.4 + 9.5 * normBA) / scale
 
-    const colorFor = (u: number) => {
-      if (u <= 0.01) return 0x374151
-      if (u < 0.6) return lerpColor(0x22c55e, 0xf97316, (u - 0.01) / 0.59)
-      return lerpColor(0xf97316, 0xef4444, (u - 0.6) / 0.4)
-    }
-
-    const colorAB = colorFor(normAB)
-    const colorBA = colorFor(normBA)
+    const colorAB = colorForLinkUsage(normAB)
+    const colorBA = colorForLinkUsage(normBA)
 
     const dashLength = 18 / scale
     const gapLength = 10 / scale
@@ -422,15 +434,23 @@ export function buildScene(root: Container, layout: Layout) {
       g.stroke({ width, color, alpha: 0.95, cap: 'round', join: 'round' })
     }
 
-    drawStroke(forwardStart, forwardEnd, widthAB, colorAB, dashed)
-    drawStroke(reverseStart, reverseEnd, widthBA, colorBA, dashed)
+    drawStroke(forwardStart, forwardEnd, widthAB, colorAB, dashedForward)
+    drawStroke(reverseStart, reverseEnd, widthBA, colorBA, dashedReverse)
 
-    drawArrowhead(forwardStart, forwardEnd, colorAB, normAB)
-    drawArrowhead(reverseStart, reverseEnd, colorBA, normBA)
+    drawArrowhead(forwardStart, forwardEnd, colorAB, normAB, widthAB)
+    drawArrowhead(reverseStart, reverseEnd, colorBA, normBA, widthBA)
 
-    function drawArrowhead(from: { x: number; y: number }, to: { x: number; y: number }, color: number, magnitude: number) {
-      const arrowLen = (9 + 5 * magnitude) / scale
-      const arrowWidth = arrowLen * 0.6
+    function drawArrowhead(
+      from: { x: number; y: number },
+      to: { x: number; y: number },
+      color: number,
+      magnitude: number,
+      strokeWidth: number,
+    ) {
+      const baseLen = (7 + 5 * magnitude) / scale
+      const widthScaled = Math.max(strokeWidth * 1.6, 5 / scale)
+      const arrowLen = Math.max(baseLen, widthScaled)
+      const arrowWidth = Math.max(arrowLen * 0.55, strokeWidth * 1.2)
       const angle = Math.atan2(to.y - from.y, to.x - from.x)
       const backX = to.x - Math.cos(angle) * arrowLen
       const backY = to.y - Math.sin(angle) * arrowLen
