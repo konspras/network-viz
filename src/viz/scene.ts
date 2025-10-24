@@ -22,7 +22,7 @@ export function buildScene(root: Container, layout: Layout) {
   const nodeGfx = new Map<string, Graphics>()
   const linkGfx = new Map<string, Graphics>()
   const linkByEnds = new Map<string, LinkDef>()
-  const torGeom = new Map<string, { left: number; right: number; top: number; bottom: number }>()
+  const torGeom = new Map<string, { left: number; right: number; top: number; bottom: number; spineAnchors: Record<string, number> }>()
   const spineGeom = new Map<string, { left: number; right: number; top: number; bottom: number; anchors: Record<string, number> }>()
   const queueLabelLayer = new Container()
   labelsLayer.addChild(queueLabelLayer)
@@ -190,41 +190,101 @@ export function buildScene(root: Container, layout: Layout) {
           left = minS - padX
           right = maxS + padX
         }
-        const torBaseHeight = 44
-        const torQueueBaseHeight = torBaseHeight - 21
+        const torBaseHeight = 56
         const h = torBaseHeight * 2
         const top = p.y - h / 2
         const bottom = p.y + h / 2
         // Save geometry for link alignment
-        torGeom.set(id, { left, right, top, bottom })
+        const torState = { left, right, top, bottom, spineAnchors: {} as Record<string, number> }
+        torGeom.set(id, torState)
         // Draw ToR body
         g.roundRect(left, top, right - left, h, 4).fill({ color: fill }).stroke({ color: 0x0, width: strokeW })
         // Per-link egress queues inside ToR aligned over each server
         if (serverIds.length) {
-          const labelY = top + 11
-          const innerTop = labelY + 6
-          const innerBottom = bottom - 4
-          const innerHeightRaw = Math.max(6, innerBottom - innerTop)
-          const queueHeightTarget = Math.min(innerHeightRaw, torQueueBaseHeight * 2)
-          const queueOffset = (innerHeightRaw - queueHeightTarget) / 2
-          const queueTop = innerTop + queueOffset
-          const queueBottom = queueTop + queueHeightTarget
-          const contentWidth = Math.max(0, right - left - 12)
+          const spineLinks = layout.links
+            .filter((l) => (l.a === id && l.b.startsWith('sp')) || (l.b === id && l.a.startsWith('sp')))
+            .map((link) => {
+              const other = link.a === id ? link.b : link.a
+              return { link, spineId: other, x: positions.get(other)?.x ?? p.x }
+            })
+            .sort((a, b) => a.x - b.x)
+
+          const innerTop = top + 18
+          const innerBottom = bottom - 18
+          const innerHeightRaw = Math.max(42, innerBottom - innerTop)
+          let rowGap = Math.min(14, Math.max(8, innerHeightRaw * 0.2))
+          let rowHeight = (innerHeightRaw - rowGap) / 2
+          if (rowHeight < 14) {
+            rowHeight = 14
+            rowGap = Math.max(6, innerHeightRaw - rowHeight * 2)
+          }
+          const spineRowTop = innerTop
+          const hostRowTop = innerBottom - rowHeight
+
+          const drawQueueBar = (
+            centerX: number,
+            barWidth: number,
+            rowTop: number,
+            rowHeight: number,
+            queueValue: number,
+            key: string,
+            direction: 'up' | 'down',
+          ) => {
+            const bx = centerX - barWidth / 2
+            g.roundRect(bx, rowTop, barWidth, rowHeight, 2).fill({ color: 0x1e2430, alpha: 0.9 })
+            const norm = clamp01(queueValue / maxQueueKb)
+            const filledH = rowHeight * norm
+            const fillTop = direction === 'up' ? rowTop : rowTop + rowHeight - filledH
+            g.roundRect(bx, fillTop, barWidth, filledH, 2).fill({ color: colorForQueueUsage(norm), alpha: 0.95 })
+            useQueueLabel(key, centerX, rowTop + rowHeight / 2, Math.min(queueValue, maxQueueKb), 0.5)
+
+            const triHeight = 5
+            const triHalf = Math.min(barWidth / 2, 5)
+            if (direction === 'up') {
+              const baseY = rowTop - 1
+              const apexY = baseY - triHeight
+              g.moveTo(centerX - triHalf, baseY)
+              g.lineTo(centerX + triHalf, baseY)
+              g.lineTo(centerX, apexY)
+              g.closePath()
+              g.fill({ color: 0x1e2430, alpha: 0.95 })
+            } else {
+              const baseY = rowTop + rowHeight + 1
+              const apexY = baseY + triHeight
+              g.moveTo(centerX - triHalf, baseY)
+              g.lineTo(centerX + triHalf, baseY)
+              g.lineTo(centerX, apexY)
+              g.closePath()
+              g.fill({ color: 0x1e2430, alpha: 0.95 })
+            }
+          }
+
+          // Upper row: ToR -> Spine egress queues
+          if (spineLinks.length) {
+            const torState = torGeom.get(id)!
+            const torWidth = right - left
+            const count = spineLinks.length
+            const barWidthTop = Math.min(26, Math.max(12, torWidth * 0.18 / Math.max(1, count)))
+            spineLinks.forEach(({ link, spineId }, idx) => {
+              const frac = (idx + 1) / (count + 1)
+              const cxBase = left + torWidth * frac
+              const cx = Math.min(Math.max(cxBase, left + 24), right - 24)
+              const queueValue = getLinkQueue(link, id)
+              torState.spineAnchors[spineId] = cx
+              drawQueueBar(cx, barWidthTop, spineRowTop, rowHeight, queueValue, `${id}:spine:${spineId}`, 'up')
+            })
+          }
+
+          // Lower row: ToR -> Host egress queues
+          const contentWidth = Math.max(0, right - left - 48)
           const maxHosts = Math.max(1, serverIds.length)
           const baseWidth = contentWidth / maxHosts
-          const barW = Math.min(28, Math.max(6, baseWidth * 1.5))
+          const barW = Math.min(26, Math.max(12, baseWidth * 0.9))
           for (const sid of serverIds) {
             const link = layout.links.find(l => (l.a === sid && l.b === id) || (l.b === sid && l.a === id))!
             const qLevel = getLinkQueue(link, id)
-            const cx = Math.min(Math.max(positions.get(sid)!.x, left + 2), right - 2)
-            const bx = cx - barW / 2
-            // background
-            g.roundRect(bx, queueTop, barW, queueHeightTarget, 2).fill({ color: 0x1e2430, alpha: 0.9 })
-            // fill from bottom up
-            const norm = clamp01(qLevel / maxQueueKb)
-            const filledH = queueHeightTarget * norm
-            g.roundRect(bx, queueBottom - filledH, barW, filledH, 2).fill({ color: colorForQueueUsage(norm), alpha: 0.95 })
-            useQueueLabel(`${id}:${sid}`, cx, queueTop + queueHeightTarget / 2, Math.min(qLevel, maxQueueKb), 0.5)
+            const cx = Math.min(Math.max(positions.get(sid)!.x, left + 24), right - 24)
+            drawQueueBar(cx, barW, hostRowTop, rowHeight, qLevel, `${id}:${sid}`, 'down')
           }
         }
       } else {
@@ -268,7 +328,7 @@ export function buildScene(root: Container, layout: Layout) {
         // queues aligned above each ToR using shared anchors
         const maxTors = Math.max(1, sortedTorIds.length)
         const baseBarWidth = usableWidth / maxTors
-        const barWidth = Math.min(28, Math.max(6, baseBarWidth * 1.5))
+        const barWidth = Math.min(26, Math.max(12, baseBarWidth * 0.9))
         const labelY = top + 10
         const innerTop = labelY + 6
         const innerBottom = bottom - 4
@@ -385,7 +445,8 @@ export function buildScene(root: Container, layout: Layout) {
         a = { x: a.x, y: a.y + 16 }
       }
       if (tor) {
-        const endX = (tor.left + tor.right) / 2
+        const anchor = tor.spineAnchors[aNode.id]
+        const endX = anchor !== undefined ? anchor : (tor.left + tor.right) / 2
         b = { x: endX, y: tor.top }
       } else {
         b = { x: targetX, y: b.y - 16 }
@@ -402,7 +463,8 @@ export function buildScene(root: Container, layout: Layout) {
         b = { x: b.x, y: b.y + 16 }
       }
       if (tor) {
-        const startX = (tor.left + tor.right) / 2
+        const anchor = tor.spineAnchors[bNode.id]
+        const startX = anchor !== undefined ? anchor : (tor.left + tor.right) / 2
         a = { x: startX, y: tor.top }
       } else {
         a = { x: targetX, y: a.y - 16 }
