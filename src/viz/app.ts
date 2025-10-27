@@ -24,6 +24,12 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
   await app.init({ width: opts.width, height: opts.height, background: '#0e1013', antialias: true })
   el.innerHTML = ''
   el.appendChild(app.canvas)
+  const textureGC = (app.renderer as any)?.textureGC
+  if (textureGC) {
+    textureGC.maxIdle = 30
+    textureGC.checkCountMax = 30
+    console.log('[viz] texture GC tuned', { maxIdle: textureGC.maxIdle, checkCountMax: textureGC.checkCountMax })
+  }
   if (!app.ticker.started) {
     app.ticker.start()
     console.log('[viz] Pixi ticker started explicitly')
@@ -67,6 +73,44 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
     }
     if (++frameCount % 60 === 0) {
       console.log('[viz] ticker', { simTime, dt, speed })
+    }
+  })
+
+  const debugTracker = { frames: 0 }
+  app.ticker.add(() => {
+    debugTracker.frames++
+    if (debugTracker.frames % 120 !== 0) return
+    const rendererAny = app.renderer as any
+    const managedTextures = rendererAny?.texture?.managedTextures
+    const textureCount = Array.isArray(managedTextures) ? managedTextures.length : 'n/a'
+    if (textureGC && textureGC.active) {
+      textureGC.run()
+    }
+    const debugStats = (globalThis as any).__vizDebug
+    const labelUpdates = debugStats?.labelTextUpdates ?? 'n/a'
+    const textureSystem = rendererAny?.texture
+    const gpuSourceCount = textureSystem && textureSystem._gpuSources ? Object.keys(textureSystem._gpuSources).length : 'n/a'
+    const gpuSamplerCount = textureSystem && textureSystem._gpuSamplers ? Object.keys(textureSystem._gpuSamplers).length : 'n/a'
+    const textureViewCount = textureSystem && textureSystem._textureViewHash ? Object.keys(textureSystem._textureViewHash).length : 'n/a'
+    const bindGroupCount = textureSystem && textureSystem._bindGroupHash ? Object.keys(textureSystem._bindGroupHash).length : 'n/a'
+    const geometrySystem = rendererAny?.geometry
+    const geometryCount = geometrySystem && geometrySystem._geometries ? Object.keys(geometrySystem._geometries).length : 'n/a'
+    const shaderSystem = rendererAny?.shader
+    const programCount = shaderSystem && shaderSystem._programs ? shaderSystem._programs.size ?? Object.keys(shaderSystem._programs).length : 'n/a'
+
+    console.log('[viz][debug] frame', debugTracker.frames, {
+      textureCount,
+      gpuSourceCount,
+      gpuSamplerCount,
+      textureViewCount,
+      bindGroupCount,
+      geometryCount,
+      programCount,
+      labelUpdates,
+      playing,
+    })
+    if (debugStats) {
+      debugStats.labelTextUpdates = 0
     }
   })
 

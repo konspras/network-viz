@@ -1,7 +1,29 @@
 import { Container, Graphics, Text, Rectangle } from 'pixi.js'
 import type { Layout, Snapshot, NodeDef, LinkDef, LinkSnapshot } from './types'
 
+// When DRAW_LINK_FILL is true, every call to drawStroke ends with:
+
+// g.stroke({ width, color, alpha: 0.95, cap: 'round', join: 'round' })
+// Inside Pixi this does much more than draw a line—it builds a new GraphicsContext mesh, allocates fresh vertex and index buffers for that line, 
+// and uploads them to the GPU. We call it twice per link (forward and reverse) every frame, so dozens of new GPU geometries are created each tick.
+
+// Those geometry buffers aren’t reclaimed immediately. Pixi keeps them in its geometry cache until the geometry GC runs (renderer.geometry.gc). 
+// Because we never trigger that GC, the old buffers just pile up on the GPU. That’s why the Chrome “GPU Process” blows up to gigabytes whenever link fill drawing is enabled. 
+// As soon as we skip g.stroke, the allocations stop, so memory stays flat.
+
+// So the “explosion” isn’t a JavaScript leak; it’s accumulated GPU geometry buffers produced by the g.stroke(…) calls. 
+// We’ll either need to run the geometry GC regularly (e.g., app.renderer.geometry.gc.run()), or switch to a custom mesh/line renderer that reuses vertex buffers instead of generating a fresh mesh every frame.
+
+// Next step https://chatgpt.com/c/68fbb02d-15f8-832a-ae1c-9bdb8429bc40 
+
 export function buildScene(root: Container, layout: Layout) {
+  const DRAW_LINKS = true // Toggle link rendering (disabled while debugging GPU allocations)
+  const DRAW_LINK_FILL = true // Toggle link fill (disabled while debugging GPU allocations)
+  const DRAW_NODES = true // Toggle node rendering (disabled while debugging GPU allocations)
+  const SHOW_QUEUE_LABELS = true // Toggle queue labels (disabled while hunting GPU leak)
+  const SHOW_HOST_BUCKETS = false // Toggle host bucket graphics (disabled during GPU leak hunt)
+  const SHOW_TOR_SPINE_QUEUES = false // Toggle ToR->spine queue bars (disabled during GPU leak hunt)
+  const DRAW_LINK_ARROWHEADS = false // Toggle link arrowheads (disabled during GPU leak hunt)  -> by itself, no ram explosion
   // screen-space grid layer (infinite grid) + world container
   const gridLayer = new Graphics()
   root.addChild(gridLayer)
@@ -132,7 +154,9 @@ export function buildScene(root: Container, layout: Layout) {
     return nodeColors.switch
   }
 
+
   function useQueueLabel(key: string, x: number, y: number, value: number, anchorY = 1) {
+    if (!SHOW_QUEUE_LABELS) return
     let label = queueLabels.get(key)
     if (!label) {
       label = new Text({
@@ -260,7 +284,7 @@ export function buildScene(root: Container, layout: Layout) {
           }
 
           // Upper row: ToR -> Spine egress queues
-          if (spineLinks.length) {
+          if (SHOW_TOR_SPINE_QUEUES && spineLinks.length) {
             const torState = torGeom.get(id)!
             const torWidth = right - left
             const count = spineLinks.length
@@ -363,21 +387,23 @@ export function buildScene(root: Container, layout: Layout) {
       const norm = clamp01(queue / maxQueueKb)
       const filledH = barH * norm
       g.roundRect(bx, bottom - filledH, barW, filledH, 3).fill({ color: colorForQueueUsage(norm), alpha: 0.95 })
-      const bucketSpacing = 6
-      const bucketWidth = barW + 4
-      const bucketLeft = p.x - bucketWidth / 2
-      const bucketTop = bottom + bucketSpacing
-      const bucketHeight = barH
-      const bucketRadius = 4
-      const bucketStroke = { color: 0xcbd5f5, width: 2, alpha: 0.85 } as const
-      g.roundRect(bucketLeft, bucketTop, bucketWidth, bucketHeight, bucketRadius).stroke(bucketStroke)
-      const handleWidth = Math.max(6, bucketWidth * 0.6)
-      const handleLeft = bucketLeft + (bucketWidth - handleWidth) / 2
-      const handleRight = handleLeft + handleWidth
-      const handleTop = bucketTop - 6
-      g.moveTo(handleLeft, bucketTop)
-      g.quadraticCurveTo(bucketLeft + bucketWidth / 2, handleTop, handleRight, bucketTop)
-      g.stroke(bucketStroke)
+      if (SHOW_HOST_BUCKETS) {
+        const bucketSpacing = 6
+        const bucketWidth = barW + 4
+        const bucketLeft = p.x - bucketWidth / 2
+        const bucketTop = bottom + bucketSpacing
+        const bucketHeight = barH
+        const bucketRadius = 4
+        const bucketStroke = { color: 0xcbd5f5, width: 2, alpha: 0.85 } as const
+        g.roundRect(bucketLeft, bucketTop, bucketWidth, bucketHeight, bucketRadius).stroke(bucketStroke)
+        const handleWidth = Math.max(6, bucketWidth * 0.6)
+        const handleLeft = bucketLeft + (bucketWidth - handleWidth) / 2
+        const handleRight = handleLeft + handleWidth
+        const handleTop = bucketTop - 6
+        g.moveTo(handleLeft, bucketTop)
+        g.quadraticCurveTo(bucketLeft + bucketWidth / 2, handleTop, handleRight, bucketTop)
+        g.stroke(bucketStroke)
+      }
       const label = hostLabels.get(id)
       if (label) {
         label.visible = true
@@ -494,35 +520,38 @@ export function buildScene(root: Container, layout: Layout) {
     const gapLength = 10
 
     const drawStroke = (start: { x: number; y: number }, end: { x: number; y: number }, width: number, color: number, dashed: boolean) => {
-      if (!dashed) {
-        g.moveTo(start.x, start.y)
-        g.lineTo(end.x, end.y)
-        g.stroke({ width, color, alpha: 0.95, cap: 'round', join: 'round' })
-        return
-      }
-      const total = Math.hypot(end.x - start.x, end.y - start.y)
-      if (total === 0) return
-      const dirX = (end.x - start.x) / total
-      const dirY = (end.y - start.y) / total
-      let dist = 0
-      while (dist < total) {
-        const dash = Math.min(dashLength, total - dist)
-        const sx = start.x + dirX * dist
-        const sy = start.y + dirY * dist
-        const ex = start.x + dirX * (dist + dash)
-        const ey = start.y + dirY * (dist + dash)
-        g.moveTo(sx, sy)
-        g.lineTo(ex, ey)
-        dist += dash + gapLength
-      }
+    if (!DRAW_LINK_FILL) return
+    if (!dashed) {
+      g.moveTo(start.x, start.y)
+      g.lineTo(end.x, end.y)
       g.stroke({ width, color, alpha: 0.95, cap: 'round', join: 'round' })
+      return
+    }
+    const total = Math.hypot(end.x - start.x, end.y - start.y)
+    if (total === 0) return
+    const dirX = (end.x - start.x) / total
+    const dirY = (end.y - start.y) / total
+    let dist = 0
+    while (dist < total) {
+      const dash = Math.min(dashLength, total - dist)
+      const sx = start.x + dirX * dist
+      const sy = start.y + dirY * dist
+      const ex = start.x + dirX * (dist + dash)
+      const ey = start.y + dirY * (dist + dash)
+      g.moveTo(sx, sy)
+      g.lineTo(ex, ey)
+      dist += dash + gapLength
+    }
+    g.stroke({ width, color, alpha: 0.95, cap: 'round', join: 'round' })
     }
 
     drawStroke(forwardStart, forwardEnd, widthAB, colorAB, dashedForward)
     drawStroke(reverseStart, reverseEnd, widthBA, colorBA, dashedReverse)
 
-    drawArrowhead(forwardStart, forwardEnd, colorAB, normAB, widthAB)
-    drawArrowhead(reverseStart, reverseEnd, colorBA, normBA, widthBA)
+    if (DRAW_LINK_ARROWHEADS) {
+      drawArrowhead(forwardStart, forwardEnd, colorAB, normAB, widthAB)
+      drawArrowhead(reverseStart, reverseEnd, colorBA, normBA, widthBA)
+    }
 
     function drawArrowhead(
       from: { x: number; y: number },
@@ -555,12 +584,16 @@ export function buildScene(root: Container, layout: Layout) {
   function update(snapshot: Snapshot) {
     queueLabelsUsed.clear()
     for (const label of hostLabels.values()) label.visible = false
-    for (const l of layout.links) {
-      drawLink(l.id, snapshot.links[l.id])
+    if (DRAW_LINKS) {
+      for (const l of layout.links) {
+        drawLink(l.id, snapshot.links[l.id])
+      }
     }
-    for (const n of layout.nodes) {
-      const q = snapshot.nodes[n.id]?.queue ?? 0
-      drawNode(n.id, q, snapshot.t, snapshot)
+    if (DRAW_NODES) {
+      for (const n of layout.nodes) {
+        const q = snapshot.nodes[n.id]?.queue ?? 0
+        drawNode(n.id, q, snapshot.t, snapshot)
+      }
     }
     for (const [key, label] of queueLabels) {
       if (!queueLabelsUsed.has(key)) {
