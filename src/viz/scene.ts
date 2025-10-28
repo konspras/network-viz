@@ -19,8 +19,8 @@ import type { Layout, Snapshot, NodeDef, LinkDef, LinkSnapshot } from './types'
 export function buildScene(root: Container, layout: Layout) {
   const DRAW_LINKS = true // Toggle link rendering (disabled while debugging GPU allocations)
   const DRAW_LINK_FILL = true // Toggle link fill (disabled while debugging GPU allocations)
-  const DRAW_NODES = true // Toggle node rendering (disabled while debugging GPU allocations)
-  const SHOW_QUEUE_LABELS = true // Toggle queue labels (disabled while hunting GPU leak)
+  const DRAW_NODES = false // Toggle node rendering (disabled while debugging GPU allocations)
+  const SHOW_QUEUE_LABELS = false // Toggle queue labels (disabled while hunting GPU leak)
   const SHOW_HOST_BUCKETS = false // Toggle host bucket graphics (disabled during GPU leak hunt)
   const SHOW_TOR_SPINE_QUEUES = false // Toggle ToR->spine queue bars (disabled during GPU leak hunt)
   const DRAW_LINK_ARROWHEADS = false // Toggle link arrowheads (disabled during GPU leak hunt)  -> by itself, no ram explosion
@@ -42,7 +42,7 @@ export function buildScene(root: Container, layout: Layout) {
   root.hitArea = new Rectangle(0, 0, size.width, size.height)
   const positions = new Map<string, { x: number; y: number }>()
   const nodeGfx = new Map<string, Graphics>()
-  const linkGfx = new Map<string, Graphics>()
+  const linkGfx = new Map<string, { forward: Graphics; reverse: Graphics }>()
   const linkByEnds = new Map<string, LinkDef>()
   const torGeom = new Map<string, { left: number; right: number; top: number; bottom: number; spineAnchors: Record<string, number> }>()
   const spineGeom = new Map<string, { left: number; right: number; top: number; bottom: number; anchors: Record<string, number> }>()
@@ -81,11 +81,38 @@ export function buildScene(root: Container, layout: Layout) {
       hostLabels.set(n.id, label)
     }
   }
+  const baseLinkTemplate = new Graphics()
+  baseLinkTemplate.rect(0, -0.5, 1, 1).fill({ color: 0xffffff })
+  const baseLinkGeometry: any = (baseLinkTemplate as any).geometry
+  const incrementLinkGeometryRef = () => {
+    if (baseLinkGeometry && typeof baseLinkGeometry.refCount === 'number') {
+      baseLinkGeometry.refCount += 1
+    }
+  }
+
+  const createLinkGraphic = () => {
+    const g = new Graphics()
+    if (baseLinkGeometry) {
+      ;(g as any).geometry = baseLinkGeometry
+      incrementLinkGeometryRef()
+    } else {
+      g.rect(0, -0.5, 1, 1).fill({ color: 0xffffff })
+    }
+    g.tint = 0xffffff
+    g.alpha = 0.95
+    g.visible = false
+    g.position.set(0, 0)
+    g.scale.set(1, 1)
+    return g
+  }
+
   for (const l of layout.links) {
     linkByEnds.set(l.id, l)
-    const g = new Graphics()
-    linksLayer.addChild(g)
-    linkGfx.set(l.id, g)
+    const forward = createLinkGraphic()
+    const reverse = createLinkGraphic()
+    linksLayer.addChild(forward)
+    linksLayer.addChild(reverse)
+    linkGfx.set(l.id, { forward, reverse })
   }
 
   // compute bounds of topology in world coords (include labels offset)
@@ -413,15 +440,28 @@ export function buildScene(root: Container, layout: Layout) {
     // no per-node label
   }
 
-  function drawLink(id: string, usage: LinkSnapshot | undefined) {
-    const l = linkByEnds.get(id)!
-    let a = positions.get(l.a)!
-    let b = positions.get(l.b)!
-    const g = linkGfx.get(id)!
-    g.clear()
+    // const isUplink = (from: NodeDef, to: NodeDef) => {
+    //   if (from.metricsKind === 'host' && to.metricsKind === 'tor') return true
+    //   if (from.metricsKind === 'tor' && to.metricsKind === 'aggr') return true
+    //   return false
+    // }
+    // const dashedForward = isUplink(aNode, bNode) && false
+    // const dashedReverse = isUplink(bNode, aNode) && false
 
-    const aNode = layout.nodes.find(n => n.id === l.a)!
-    const bNode = layout.nodes.find(n => n.id === l.b)!
+  function drawLink(id: string, usage: LinkSnapshot | undefined) {
+    const link = linkByEnds.get(id)!
+    let a = positions.get(link.a)!
+    let b = positions.get(link.b)!
+    const visuals = linkGfx.get(id)!
+
+    if (!DRAW_LINK_FILL) {
+      visuals.forward.visible = false
+      visuals.reverse.visible = false
+      return
+    }
+
+    const aNode = layout.nodes.find(n => n.id === link.a)!
+    const bNode = layout.nodes.find(n => n.id === link.b)!
 
     const rawAB = Math.max(0, usage?.aToB ?? 0)
     const rawBA = Math.max(0, usage?.bToA ?? 0)
@@ -435,13 +475,6 @@ export function buildScene(root: Container, layout: Layout) {
     const cap = linkCapacityGbps()
     const normAB = clamp01(cap > 0 ? rawAB / cap : 0)
     const normBA = clamp01(cap > 0 ? rawBA / cap : 0)
-    const isUplink = (from: NodeDef, to: NodeDef) => {
-      if (from.metricsKind === 'host' && to.metricsKind === 'tor') return true
-      if (from.metricsKind === 'tor' && to.metricsKind === 'aggr') return true
-      return false
-    }
-    const dashedForward = isUplink(aNode, bNode)
-    const dashedReverse = isUplink(bNode, aNode)
 
     // If tor-host link, start at bottom edge of ToR aligned to server x
     const hostRadius = 10
@@ -497,10 +530,14 @@ export function buildScene(root: Container, layout: Layout) {
       }
     }
 
-    // Center guide for context
     const dx = b.x - a.x
     const dy = b.y - a.y
-    const len = Math.hypot(dx, dy) || 1
+    const len = Math.hypot(dx, dy)
+    if (!len) {
+      visuals.forward.visible = false
+      visuals.reverse.visible = false
+      return
+    }
     const nx = (-dy / len)
     const ny = (dx / len)
     const separation = 6
@@ -516,67 +553,33 @@ export function buildScene(root: Container, layout: Layout) {
     const colorAB = colorForLinkUsage(normAB)
     const colorBA = colorForLinkUsage(normBA)
 
-    const dashLength = 18
-    const gapLength = 10
-
-    const drawStroke = (start: { x: number; y: number }, end: { x: number; y: number }, width: number, color: number, dashed: boolean) => {
-    if (!DRAW_LINK_FILL) return
-    if (!dashed) {
-      g.moveTo(start.x, start.y)
-      g.lineTo(end.x, end.y)
-      g.stroke({ width, color, alpha: 0.95, cap: 'round', join: 'round' })
-      return
-    }
-    const total = Math.hypot(end.x - start.x, end.y - start.y)
-    if (total === 0) return
-    const dirX = (end.x - start.x) / total
-    const dirY = (end.y - start.y) / total
-    let dist = 0
-    while (dist < total) {
-      const dash = Math.min(dashLength, total - dist)
-      const sx = start.x + dirX * dist
-      const sy = start.y + dirY * dist
-      const ex = start.x + dirX * (dist + dash)
-      const ey = start.y + dirY * (dist + dash)
-      g.moveTo(sx, sy)
-      g.lineTo(ex, ey)
-      dist += dash + gapLength
-    }
-    g.stroke({ width, color, alpha: 0.95, cap: 'round', join: 'round' })
-    }
-
-    drawStroke(forwardStart, forwardEnd, widthAB, colorAB, dashedForward)
-    drawStroke(reverseStart, reverseEnd, widthBA, colorBA, dashedReverse)
+    updateLinkGraphic(visuals.forward, forwardStart, forwardEnd, widthAB, colorAB)
+    updateLinkGraphic(visuals.reverse, reverseStart, reverseEnd, widthBA, colorBA)
 
     if (DRAW_LINK_ARROWHEADS) {
-      drawArrowhead(forwardStart, forwardEnd, colorAB, normAB, widthAB)
-      drawArrowhead(reverseStart, reverseEnd, colorBA, normBA, widthBA)
+      // Arrowheads disabled in transform-based link rendering path
     }
+  }
 
-    function drawArrowhead(
-      from: { x: number; y: number },
-      to: { x: number; y: number },
-      color: number,
-      magnitude: number,
-      strokeWidth: number,
-    ) {
-      const baseLen = 7 + 5 * magnitude
-      const widthScaled = Math.max(strokeWidth * 1.6, 5)
-      const arrowLen = Math.max(baseLen, widthScaled)
-      const arrowWidth = Math.max(arrowLen * 0.55, strokeWidth * 1.2)
-      const angle = Math.atan2(to.y - from.y, to.x - from.x)
-      const backX = to.x - Math.cos(angle) * arrowLen
-      const backY = to.y - Math.sin(angle) * arrowLen
-      const leftX = backX + Math.cos(angle + Math.PI / 2) * arrowWidth
-      const leftY = backY + Math.sin(angle + Math.PI / 2) * arrowWidth
-      const rightX = backX + Math.cos(angle - Math.PI / 2) * arrowWidth
-      const rightY = backY + Math.sin(angle - Math.PI / 2) * arrowWidth
-      g.moveTo(to.x, to.y)
-      g.lineTo(leftX, leftY)
-      g.lineTo(rightX, rightY)
-      g.closePath()
-      g.fill({ color, alpha: 0.95 })
+  function updateLinkGraphic(
+    graphic: Graphics,
+    start: { x: number; y: number },
+    end: { x: number; y: number },
+    thickness: number,
+    color: number,
+  ) {
+    const dx = end.x - start.x
+    const dy = end.y - start.y
+    const length = Math.hypot(dx, dy)
+    if (!length || thickness <= 0) {
+      graphic.visible = false
+      return
     }
+    graphic.visible = true
+    graphic.position.set(start.x, start.y)
+    graphic.rotation = Math.atan2(dy, dx)
+    graphic.scale.set(length, thickness)
+    graphic.tint = color
   }
 
   // Packets removed

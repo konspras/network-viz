@@ -66,8 +66,10 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
     if (!playing) return
     const dt = (app.ticker.deltaMS / 1000) * speed
     simTime = Math.min(simTime + dt, duration)
-    renderSnapshot(simTime)
-    notifyTime(simTime)
+    // if (frameCount % 10 === 0) {
+      renderSnapshot(simTime)
+      notifyTime(simTime)
+    // }
     if (simTime >= duration) {
       playing = false
     }
