@@ -20,10 +20,10 @@ export function buildScene(root: Container, layout: Layout) {
   const DRAW_LINKS = true // Toggle link rendering (disabled while debugging GPU allocations)
   const DRAW_LINK_FILL = true // Toggle link fill (disabled while debugging GPU allocations)
   const DRAW_NODES = true // Toggle node rendering (disabled while debugging GPU allocations)
-  const SHOW_QUEUE_LABELS = false // Toggle queue labels (disabled while hunting GPU leak)
-  const SHOW_HOST_BUCKETS = false // Toggle host bucket graphics (disabled during GPU leak hunt)
-  const SHOW_TOR_SPINE_QUEUES = false // Toggle ToR->spine queue bars (disabled during GPU leak hunt)
-  const DRAW_LINK_ARROWHEADS = false // Toggle link arrowheads (disabled during GPU leak hunt)  -> by itself, no ram explosion
+  const SHOW_QUEUE_LABELS = true // Toggle queue labels (disabled while hunting GPU leak)
+  const SHOW_HOST_BUCKETS = true // Toggle host bucket graphics (disabled during GPU leak hunt)
+  const SHOW_TOR_SPINE_QUEUES = true // Toggle ToR->spine queue bars (disabled during GPU leak hunt)
+  const DRAW_LINK_ARROWHEADS = true // Toggle link arrowheads (disabled during GPU leak hunt)  -> by itself, no ram explosion
   // screen-space grid layer (infinite grid) + world container
   const gridLayer = new Graphics()
   root.addChild(gridLayer)
@@ -41,7 +41,7 @@ export function buildScene(root: Container, layout: Layout) {
   const worldSize = { width: 1400, height: 880 }
   root.hitArea = new Rectangle(0, 0, size.width, size.height)
   const positions = new Map<string, { x: number; y: number }>()
-  const nodeGfx = new Map<string, Graphics>()
+  const nodeVisuals = new Map<string, NodeVisual>()
   const linkGfx = new Map<string, { forward: Graphics; reverse: Graphics }>()
   const linkByEnds = new Map<string, LinkDef>()
   const torGeom = new Map<string, { left: number; right: number; top: number; bottom: number; spineAnchors: Record<string, number> }>()
@@ -53,6 +53,83 @@ export function buildScene(root: Container, layout: Layout) {
   const hostLabelLayer = new Container()
   labelsLayer.addChild(hostLabelLayer)
   const hostLabels = new Map<string, Text>()
+  const maxQueueKb = 1000
+  const nodeColors = {
+    host: 0x1f2937,
+    tor: 0x4b5563,
+    spine: 0x6b7280,
+    switch: 0x374151,
+  }
+
+  const colorForLinkUsage = (u: number) => {
+    const value = clamp01(u)
+    if (value <= 0.01) return 0xcbd5e1
+    if (value < 0.6) return lerpColor(0x22c55e, 0xf97316, (value - 0.01) / 0.59)
+    return lerpColor(0xf97316, 0xef4444, (value - 0.6) / 0.4)
+  }
+
+  const colorForQueueUsage = (u: number) => {
+    const value = clamp01(u)
+    if (value <= 0.0) return 0xffe0b8
+    if (value < 0.6) return lerpColor(0xffc777, 0xf97316, value / 0.6)
+    return lerpColor(0xf97316, 0xef4444, (value - 0.6) / 0.4)
+  }
+
+  function nodeFillColor(node: NodeDef): number {
+    if (node.type === 'host') return nodeColors.host
+    if (node.id.startsWith('tor')) return nodeColors.tor
+    if (node.id.startsWith('sp')) return nodeColors.spine
+    return nodeColors.switch
+  }
+
+  type QueueValueSource =
+    | { kind: 'node'; nodeId: string }
+    | { kind: 'link'; linkId: string; sourceNodeId: string }
+
+  type QueueLabelDescriptor = {
+    key: string
+    position: { x: number; y: number }
+    anchorY: number
+  }
+
+  type QueueVisual = {
+    fill: Graphics
+    width: number
+    height: number
+    anchor: 'top' | 'bottom'
+    valueSource: QueueValueSource
+    maxValue: number
+    label?: QueueLabelDescriptor
+  }
+
+  type NodeVisual = {
+    update: (snapshot: Snapshot) => void
+    destroy: () => void
+  }
+
+  const baseQueueTemplate = new Graphics()
+  baseQueueTemplate.rect(-0.5, 0, 1, 1).fill({ color: 0xffffff })
+  const baseQueueGeometry: any = (baseQueueTemplate as any).geometry
+  const incrementQueueGeometryRef = () => {
+    if (baseQueueGeometry && typeof baseQueueGeometry.refCount === 'number') {
+      baseQueueGeometry.refCount += 1
+    }
+  }
+
+  const createQueueFillGraphic = (anchor: 'top' | 'bottom') => {
+    const g = new Graphics()
+    if (baseQueueGeometry) {
+      ;(g as any).geometry = baseQueueGeometry
+      incrementQueueGeometryRef()
+    } else {
+      g.rect(-0.5, 0, 1, 1).fill({ color: 0xffffff })
+    }
+    g.visible = false
+    g.alpha = 0.95
+    g.pivot.set(0, anchor === 'bottom' ? 1 : 0)
+    g.tint = 0xffffff
+    return g
+  }
 
   const margin = 60
   const toPx = (n: NodeDef) => {
@@ -67,9 +144,6 @@ export function buildScene(root: Container, layout: Layout) {
   for (const n of layout.nodes) {
     const p = toPx(n)
     positions.set(n.id, p)
-    const g = new Graphics()
-    nodesLayer.addChild(g)
-    nodeGfx.set(n.id, g)
     if (n.type === 'host') {
       const label = new Text({
         text: `${n.metricsId}`,
@@ -134,6 +208,416 @@ export function buildScene(root: Container, layout: Layout) {
     return g
   }
 
+  function rebuildNodeVisuals() {
+    for (const visual of nodeVisuals.values()) {
+      visual.destroy()
+    }
+    nodeVisuals.clear()
+    nodesLayer.removeChildren()
+    torGeom.clear()
+    spineGeom.clear()
+
+    for (const node of layout.nodes) {
+      const visual = createNodeVisual(node)
+      nodeVisuals.set(node.id, visual)
+    }
+  }
+
+  function createNodeVisual(node: NodeDef): NodeVisual {
+    if (node.type === 'switch') {
+      if (node.id.startsWith('tor')) return createTorNodeVisual(node)
+      return createSpineNodeVisual(node)
+    }
+    return createEndpointNodeVisual(node)
+  }
+
+  function createEndpointNodeVisual(node: NodeDef): NodeVisual {
+    const disposables: Graphics[] = []
+    const queueVisuals: QueueVisual[] = []
+    const pos = positions.get(node.id)!
+    const fillColor = nodeFillColor(node)
+
+    const radius = 14
+    const strokeW = 2
+    const body = new Graphics()
+    body.circle(pos.x, pos.y, radius).fill({ color: fillColor }).stroke({ color: 0x0, width: strokeW })
+    nodesLayer.addChild(body)
+    disposables.push(body)
+
+    const barW = 14
+    const barH = 32
+    const top = pos.y + radius + 6
+    const bottom = top + barH
+    const barBg = new Graphics()
+    barBg.roundRect(pos.x - barW / 2, top, barW, barH, 3).fill({ color: 0x1e2430, alpha: 0.9 })
+    nodesLayer.addChild(barBg)
+    disposables.push(barBg)
+
+    if (SHOW_HOST_BUCKETS && node.type === 'host') {
+      const bucketSpacing = 6
+      const bucketWidth = barW + 4
+      const bucketLeft = pos.x - bucketWidth / 2
+      const bucketTop = bottom + bucketSpacing
+      const bucketHeight = barH
+      const bucketRadius = 4
+      const bucketStroke = { color: 0xcbd5f5, width: 2, alpha: 0.85 } as const
+      const bucket = new Graphics()
+      bucket.roundRect(bucketLeft, bucketTop, bucketWidth, bucketHeight, bucketRadius).stroke(bucketStroke)
+      const handleWidth = Math.max(6, bucketWidth * 0.6)
+      const handleLeft = bucketLeft + (bucketWidth - handleWidth) / 2
+      const handleRight = handleLeft + handleWidth
+      const handleTop = bucketTop - 6
+      bucket.moveTo(handleLeft, bucketTop)
+      bucket.quadraticCurveTo(bucketLeft + bucketWidth / 2, handleTop, handleRight, bucketTop)
+      bucket.stroke(bucketStroke)
+      nodesLayer.addChild(bucket)
+      disposables.push(bucket)
+    }
+
+    const fill = createQueueFillGraphic('bottom')
+    fill.position.set(pos.x, bottom)
+    fill.scale.x = barW
+    fill.scale.y = 0
+    nodesLayer.addChild(fill)
+    disposables.push(fill)
+    queueVisuals.push({
+      fill,
+      width: barW,
+      height: barH,
+      anchor: 'bottom',
+      valueSource: { kind: 'node', nodeId: node.id },
+      maxValue: maxQueueKb,
+    })
+
+    const hostLabel = hostLabels.get(node.id)
+    if (hostLabel) {
+      hostLabel.position.set(pos.x, pos.y)
+    }
+
+    return {
+      update(snapshot) {
+        if (hostLabel) {
+          hostLabel.visible = true
+        }
+        for (const queue of queueVisuals) {
+          updateQueueVisual(queue, snapshot)
+        }
+      },
+      destroy() {
+        for (const gfx of disposables) {
+          gfx.destroy()
+        }
+      },
+    }
+  }
+
+  function createTorNodeVisual(node: NodeDef): NodeVisual {
+    const disposables: Graphics[] = []
+    const queueVisuals: QueueVisual[] = []
+    const pos = positions.get(node.id)!
+    const fillColor = nodeFillColor(node)
+
+    const serverIds: string[] = []
+    for (const l of layout.links) {
+      if (l.a === node.id) {
+        const other = l.b
+        const otherNode = layout.nodes.find(nn => nn.id === other)
+        if (otherNode && otherNode.type === 'host') serverIds.push(other)
+      } else if (l.b === node.id) {
+        const other = l.a
+        const otherNode = layout.nodes.find(nn => nn.id === other)
+        if (otherNode && otherNode.type === 'host') serverIds.push(other)
+      }
+    }
+
+    let left = pos.x - 23
+    let right = pos.x + 23
+    if (serverIds.length) {
+      const xs = serverIds.map(sid => positions.get(sid)!.x)
+      const minS = Math.min(...xs)
+      const maxS = Math.max(...xs)
+      const padX = 26
+      left = minS - padX
+      right = maxS + padX
+    }
+
+    const torBaseHeight = 56
+    const h = torBaseHeight * 2
+    const top = pos.y - h / 2
+    const bottom = pos.y + h / 2
+    const torState = { left, right, top, bottom, spineAnchors: {} as Record<string, number> }
+    torGeom.set(node.id, torState)
+
+    const body = new Graphics()
+    body.roundRect(left, top, right - left, h, 4).fill({ color: fillColor }).stroke({ color: 0x0, width: 2 })
+    nodesLayer.addChild(body)
+    disposables.push(body)
+
+    if (serverIds.length) {
+      const spineLinks = layout.links
+        .filter(l => (l.a === node.id && l.b.startsWith('sp')) || (l.b === node.id && l.a.startsWith('sp')))
+        .map(link => {
+          const other = link.a === node.id ? link.b : link.a
+          return { link, spineId: other, x: positions.get(other)?.x ?? pos.x }
+        })
+        .sort((a, b) => a.x - b.x)
+
+      const innerTop = top + 18
+      const innerBottom = bottom - 18
+      const innerHeightRaw = Math.max(42, innerBottom - innerTop)
+      let rowGap = Math.min(14, Math.max(8, innerHeightRaw * 0.2))
+      let rowHeight = (innerHeightRaw - rowGap) / 2
+      if (rowHeight < 14) {
+        rowHeight = 14
+        rowGap = Math.max(6, innerHeightRaw - rowHeight * 2)
+      }
+      const spineRowTop = innerTop
+      const hostRowTop = innerBottom - rowHeight
+
+      const triHeight = 5
+      const drawArrow = (centerX: number, baseY: number, direction: 'up' | 'down', barWidth: number) => {
+        const triHalf = Math.min(barWidth / 2, 5)
+        if (direction === 'up') {
+          const base = baseY - 1
+          const apex = base - triHeight
+          body.moveTo(centerX - triHalf, base)
+          body.lineTo(centerX + triHalf, base)
+          body.lineTo(centerX, apex)
+          body.closePath()
+          body.fill({ color: 0x1e2430, alpha: 0.95 })
+        } else {
+          const base = baseY + 1
+          const apex = base + triHeight
+          body.moveTo(centerX - triHalf, base)
+          body.lineTo(centerX + triHalf, base)
+          body.lineTo(centerX, apex)
+          body.closePath()
+          body.fill({ color: 0x1e2430, alpha: 0.95 })
+        }
+      }
+
+      const addQueueBar = (
+        centerX: number,
+        barWidth: number,
+        rowTop: number,
+        rowHeightLocal: number,
+        direction: 'up' | 'down',
+        valueSource: QueueValueSource,
+        labelKey: string,
+      ) => {
+        const bx = centerX - barWidth / 2
+        body.roundRect(bx, rowTop, barWidth, rowHeightLocal, 2).fill({ color: 0x1e2430, alpha: 0.9 })
+        const anchor = direction === 'up' ? 'top' : 'bottom'
+        const fill = createQueueFillGraphic(anchor)
+        fill.position.set(centerX, direction === 'up' ? rowTop : rowTop + rowHeightLocal)
+        fill.scale.x = barWidth
+        fill.scale.y = 0
+        nodesLayer.addChild(fill)
+        disposables.push(fill)
+        queueVisuals.push({
+          fill,
+          width: barWidth,
+          height: rowHeightLocal,
+          anchor,
+          valueSource,
+          maxValue: maxQueueKb,
+          label: { key: labelKey, position: { x: centerX, y: rowTop + rowHeightLocal / 2 }, anchorY: 0.5 },
+        })
+        drawArrow(centerX, direction === 'up' ? rowTop : rowTop + rowHeightLocal, direction, barWidth)
+      }
+
+      if (SHOW_TOR_SPINE_QUEUES && spineLinks.length) {
+        const torWidth = right - left
+        const count = spineLinks.length
+        const barWidthTop = Math.min(26, Math.max(12, torWidth * 0.18 / Math.max(1, count)))
+        spineLinks.forEach(({ link, spineId }, idx) => {
+          const frac = (idx + 1) / (count + 1)
+          const cxBase = left + torWidth * frac
+          const cx = Math.min(Math.max(cxBase, left + 24), right - 24)
+          torState.spineAnchors[spineId] = cx
+          addQueueBar(
+            cx,
+            barWidthTop,
+            spineRowTop,
+            rowHeight,
+            'up',
+            { kind: 'link', linkId: link.id, sourceNodeId: node.id },
+            `${node.id}:spine:${spineId}`,
+          )
+        })
+      } else {
+        spineLinks.forEach(({ spineId }, idx) => {
+          const frac = (idx + 1) / (spineLinks.length + 1)
+          const torWidth = right - left
+          const cxBase = left + torWidth * frac
+          const cx = Math.min(Math.max(cxBase, left + 24), right - 24)
+          torState.spineAnchors[spineId] = cx
+        })
+      }
+
+      const contentWidth = Math.max(0, right - left - 48)
+      const maxHosts = Math.max(1, serverIds.length)
+      const baseWidth = contentWidth / maxHosts
+      const barWHost = Math.min(26, Math.max(12, baseWidth * 0.9))
+      for (const sid of serverIds) {
+        const link = layout.links.find(l => (l.a === sid && l.b === node.id) || (l.b === sid && l.a === node.id))
+        if (!link) continue
+        const cx = Math.min(Math.max(positions.get(sid)!.x, left + 24), right - 24)
+        addQueueBar(
+          cx,
+          barWHost,
+          hostRowTop,
+          rowHeight,
+          'down',
+          { kind: 'link', linkId: link.id, sourceNodeId: node.id },
+          `${node.id}:${sid}`,
+        )
+      }
+    }
+
+    return {
+      update(snapshot) {
+        for (const queue of queueVisuals) {
+          updateQueueVisual(queue, snapshot)
+        }
+      },
+      destroy() {
+        for (const gfx of disposables) {
+          gfx.destroy()
+        }
+      },
+    }
+  }
+
+  function createSpineNodeVisual(node: NodeDef): NodeVisual {
+    const disposables: Graphics[] = []
+    const queueVisuals: QueueVisual[] = []
+    const pos = positions.get(node.id)!
+    const fillColor = nodeFillColor(node)
+
+    const torIds = layout.nodes.filter(nn => nn.id.startsWith('tor')).map(nn => nn.id)
+    const torXs = torIds.map(id => positions.get(id)!.x)
+    const torMin = Math.min(...torXs)
+    const torMax = Math.max(...torXs)
+    const span = Math.max(120, torMax - torMin + 60)
+    const width = span / Math.max(1, torIds.length)
+    const left = pos.x - width / 2
+    const right = pos.x + width / 2
+    const spineBaseHeight = 42
+    const spineQueueBaseHeight = spineBaseHeight - 20
+    const h = spineBaseHeight * 2
+    const top = pos.y - h / 2
+    const bottom = pos.y + h / 2
+
+    const body = new Graphics()
+    body.roundRect(left, top, right - left, h, 4).fill({ color: fillColor }).stroke({ color: 0x0, width: 2 })
+    nodesLayer.addChild(body)
+    disposables.push(body)
+
+    const sortedTorIds = torIds.slice().sort((a, b) => positions.get(a)!.x - positions.get(b)!.x)
+    const spanWidth = right - left
+    const marginX = Math.min(28, Math.max(10, spanWidth * 0.12))
+    const usableWidth = Math.max(0, spanWidth - marginX * 2)
+    const anchors: Record<string, number> = {}
+
+    if (sortedTorIds.length === 1) {
+      anchors[sortedTorIds[0]] = left + spanWidth / 2
+    } else if (usableWidth <= 0) {
+      sortedTorIds.forEach(tid => {
+        anchors[tid] = left + spanWidth / 2
+      })
+    } else {
+      sortedTorIds.forEach((tid, idx) => {
+        const t = sortedTorIds.length === 1 ? 0.5 : idx / (sortedTorIds.length - 1)
+        anchors[tid] = left + marginX + usableWidth * t
+      })
+    }
+
+    spineGeom.set(node.id, { left, right, top, bottom, anchors })
+
+    const maxTors = Math.max(1, sortedTorIds.length)
+    const baseBarWidth = usableWidth / maxTors
+    const barWidth = Math.min(26, Math.max(12, baseBarWidth * 0.9))
+    const labelY = top + 10
+    const innerTop = labelY + 6
+    const innerBottom = bottom - 4
+    const innerHeightRaw = Math.max(6, innerBottom - innerTop)
+    const queueHeightTarget = Math.min(innerHeightRaw, spineQueueBaseHeight * 2)
+    const queueOffset = (innerHeightRaw - queueHeightTarget) / 2
+    const queueTop = innerTop + queueOffset
+    const queueBottom = queueTop + queueHeightTarget
+
+    sortedTorIds.forEach(tid => {
+      const link = layout.links.find(l => (l.a === tid && l.b === node.id) || (l.b === tid && l.a === node.id))
+      const anchorCenter = anchors[tid] ?? (left + spanWidth / 2)
+      const safeCenter = Math.min(Math.max(anchorCenter, left + barWidth / 2 + 4), right - barWidth / 2 - 4)
+      body.roundRect(safeCenter - barWidth / 2, queueTop, barWidth, queueHeightTarget, 2).fill({ color: 0x1e2430, alpha: 0.9 })
+      const fill = createQueueFillGraphic('bottom')
+      fill.position.set(safeCenter, queueBottom)
+      fill.scale.x = barWidth
+      fill.scale.y = 0
+      nodesLayer.addChild(fill)
+      disposables.push(fill)
+      if (link) {
+        queueVisuals.push({
+          fill,
+          width: barWidth,
+          height: queueHeightTarget,
+          anchor: 'bottom',
+          valueSource: { kind: 'link', linkId: link.id, sourceNodeId: node.id },
+          maxValue: maxQueueKb,
+          label: { key: `${node.id}:${tid}`, position: { x: safeCenter, y: queueTop + queueHeightTarget / 2 }, anchorY: 0.5 },
+        })
+      } else {
+        queueVisuals.push({
+          fill,
+          width: barWidth,
+          height: queueHeightTarget,
+          anchor: 'bottom',
+          valueSource: { kind: 'node', nodeId: tid },
+          maxValue: maxQueueKb,
+        })
+      }
+    })
+
+    return {
+      update(snapshot) {
+        for (const queue of queueVisuals) {
+          updateQueueVisual(queue, snapshot)
+        }
+      },
+      destroy() {
+        for (const gfx of disposables) {
+          gfx.destroy()
+        }
+      },
+    }
+  }
+
+  function getQueueValue(source: QueueValueSource, snapshot: Snapshot): number {
+    if (source.kind === 'node') {
+      return Math.max(0, snapshot.nodes[source.nodeId]?.queue ?? 0)
+    }
+    const link = linkByEnds.get(source.linkId)
+    const snap = snapshot.links[source.linkId]
+    if (!link || !snap) return 0
+    if (link.a === source.sourceNodeId) return Math.max(0, snap.queueA ?? 0)
+    if (link.b === source.sourceNodeId) return Math.max(0, snap.queueB ?? 0)
+    return 0
+  }
+
+  function updateQueueVisual(visual: QueueVisual, snapshot: Snapshot) {
+    const value = getQueueValue(visual.valueSource, snapshot)
+    const norm = clamp01(visual.maxValue > 0 ? value / visual.maxValue : 0)
+    visual.fill.scale.x = visual.width
+    visual.fill.scale.y = visual.height * norm
+    visual.fill.tint = colorForQueueUsage(norm)
+    visual.fill.visible = norm > 0
+    if (SHOW_QUEUE_LABELS && visual.label) {
+      useQueueLabel(visual.label.key, visual.label.position.x, visual.label.position.y, Math.min(value, visual.maxValue), visual.label.anchorY)
+    }
+  }
+
   for (const l of layout.links) {
     linkByEnds.set(l.id, l)
     const aNode = layout.nodes.find(n => n.id === l.a)!
@@ -144,6 +628,8 @@ export function buildScene(root: Container, layout: Layout) {
     linksLayer.addChild(reverse)
     linkGfx.set(l.id, { forward, reverse })
   }
+
+  rebuildNodeVisuals()
 
   // compute bounds of topology in world coords (include labels offset)
   function computeBounds() {
@@ -180,38 +666,6 @@ export function buildScene(root: Container, layout: Layout) {
     }
     gridLayer.stroke()
   }
-
-  const maxQueueKb = 1000
-
-  const nodeColors = {
-    host: 0x1f2937,
-    tor: 0x4b5563,
-    spine: 0x6b7280,
-    switch: 0x374151,
-  }
-
-  const colorForLinkUsage = (u: number) => {
-    const value = clamp01(u)
-    if (value <= 0.01) return 0xcbd5e1
-    if (value < 0.6) return lerpColor(0x22c55e, 0xf97316, (value - 0.01) / 0.59)
-    return lerpColor(0xf97316, 0xef4444, (value - 0.6) / 0.4)
-  }
-
-  const colorForQueueUsage = (u: number) => {
-    const value = clamp01(u)
-    if (value <= 0.0) return 0xffe0b8
-    if (value < 0.6) return lerpColor(0xffc777, 0xf97316, value / 0.6)
-    return lerpColor(0xf97316, 0xef4444, (value - 0.6) / 0.4)
-  }
-
-  function nodeFillColor(node: NodeDef): number {
-    if (node.type === 'host') return nodeColors.host
-    if (node.id.startsWith('tor')) return nodeColors.tor
-    if (node.id.startsWith('sp')) return nodeColors.spine
-    return nodeColors.switch
-  }
-
-
   function useQueueLabel(key: string, x: number, y: number, value: number, anchorY = 1) {
     if (!SHOW_QUEUE_LABELS) return
     let label = queueLabels.get(key)
@@ -230,244 +684,6 @@ export function buildScene(root: Container, layout: Layout) {
     label.position.set(x, y)
     const rounded = Math.max(0, Math.round(value))
     label.text = `${rounded}`
-  }
-
-  function drawNode(id: string, queue: number, _timeSec: number, snapshot: Snapshot) {
-    const n = layout.nodes.find((x) => x.id === id)!
-    const p = positions.get(id)!
-    const g = nodeGfx.get(id)!
-    g.clear()
-    const fill = nodeFillColor(n)
-    const strokeW = 2
-    const getLinkQueue = (link: LinkDef, sourceId: string) => {
-      const snap = snapshot.links[link.id]
-      if (!snap) return 0
-      if (link.a === sourceId) return Math.max(0, snap.queueA ?? 0)
-      if (link.b === sourceId) return Math.max(0, snap.queueB ?? 0)
-      return 0
-    }
-    if (n.type === 'switch') {
-      const isTor = id.startsWith('tor')
-      if (isTor) {
-        // Find servers connected to this ToR
-        const serverIds: string[] = []
-        for (const l of layout.links) {
-          if (l.a === id) {
-            const other = l.b
-            const node = layout.nodes.find(nn => nn.id === other)
-            if (node && node.type === 'host') serverIds.push(other)
-          } else if (l.b === id) {
-            const other = l.a
-            const node = layout.nodes.find(nn => nn.id === other)
-            if (node && node.type === 'host') serverIds.push(other)
-          }
-        }
-        let left = p.x - 23, right = p.x + 23
-        if (serverIds.length) {
-          const xs = serverIds.map(sid => positions.get(sid)!.x)
-          const minS = Math.min(...xs)
-          const maxS = Math.max(...xs)
-          const padX = 26
-          left = minS - padX
-          right = maxS + padX
-        }
-        const torBaseHeight = 56
-        const h = torBaseHeight * 2
-        const top = p.y - h / 2
-        const bottom = p.y + h / 2
-        // Save geometry for link alignment
-        const torState = { left, right, top, bottom, spineAnchors: {} as Record<string, number> }
-        torGeom.set(id, torState)
-        // Draw ToR body
-        g.roundRect(left, top, right - left, h, 4).fill({ color: fill }).stroke({ color: 0x0, width: strokeW })
-        // Per-link egress queues inside ToR aligned over each server
-        if (serverIds.length) {
-          const spineLinks = layout.links
-            .filter((l) => (l.a === id && l.b.startsWith('sp')) || (l.b === id && l.a.startsWith('sp')))
-            .map((link) => {
-              const other = link.a === id ? link.b : link.a
-              return { link, spineId: other, x: positions.get(other)?.x ?? p.x }
-            })
-            .sort((a, b) => a.x - b.x)
-
-          const innerTop = top + 18
-          const innerBottom = bottom - 18
-          const innerHeightRaw = Math.max(42, innerBottom - innerTop)
-          let rowGap = Math.min(14, Math.max(8, innerHeightRaw * 0.2))
-          let rowHeight = (innerHeightRaw - rowGap) / 2
-          if (rowHeight < 14) {
-            rowHeight = 14
-            rowGap = Math.max(6, innerHeightRaw - rowHeight * 2)
-          }
-          const spineRowTop = innerTop
-          const hostRowTop = innerBottom - rowHeight
-
-          const drawQueueBar = (
-            centerX: number,
-            barWidth: number,
-            rowTop: number,
-            rowHeight: number,
-            queueValue: number,
-            key: string,
-            direction: 'up' | 'down',
-          ) => {
-            const bx = centerX - barWidth / 2
-            g.roundRect(bx, rowTop, barWidth, rowHeight, 2).fill({ color: 0x1e2430, alpha: 0.9 })
-            const norm = clamp01(queueValue / maxQueueKb)
-            const filledH = rowHeight * norm
-            const fillTop = direction === 'up' ? rowTop : rowTop + rowHeight - filledH
-            g.roundRect(bx, fillTop, barWidth, filledH, 2).fill({ color: colorForQueueUsage(norm), alpha: 0.95 })
-            useQueueLabel(key, centerX, rowTop + rowHeight / 2, Math.min(queueValue, maxQueueKb), 0.5)
-
-            const triHeight = 5
-            const triHalf = Math.min(barWidth / 2, 5)
-            if (direction === 'up') {
-              const baseY = rowTop - 1
-              const apexY = baseY - triHeight
-              g.moveTo(centerX - triHalf, baseY)
-              g.lineTo(centerX + triHalf, baseY)
-              g.lineTo(centerX, apexY)
-              g.closePath()
-              g.fill({ color: 0x1e2430, alpha: 0.95 })
-            } else {
-              const baseY = rowTop + rowHeight + 1
-              const apexY = baseY + triHeight
-              g.moveTo(centerX - triHalf, baseY)
-              g.lineTo(centerX + triHalf, baseY)
-              g.lineTo(centerX, apexY)
-              g.closePath()
-              g.fill({ color: 0x1e2430, alpha: 0.95 })
-            }
-          }
-
-          // Upper row: ToR -> Spine egress queues
-          if (SHOW_TOR_SPINE_QUEUES && spineLinks.length) {
-            const torState = torGeom.get(id)!
-            const torWidth = right - left
-            const count = spineLinks.length
-            const barWidthTop = Math.min(26, Math.max(12, torWidth * 0.18 / Math.max(1, count)))
-            spineLinks.forEach(({ link, spineId }, idx) => {
-              const frac = (idx + 1) / (count + 1)
-              const cxBase = left + torWidth * frac
-              const cx = Math.min(Math.max(cxBase, left + 24), right - 24)
-              const queueValue = getLinkQueue(link, id)
-              torState.spineAnchors[spineId] = cx
-              drawQueueBar(cx, barWidthTop, spineRowTop, rowHeight, queueValue, `${id}:spine:${spineId}`, 'up')
-            })
-          }
-
-          // Lower row: ToR -> Host egress queues
-          const contentWidth = Math.max(0, right - left - 48)
-          const maxHosts = Math.max(1, serverIds.length)
-          const baseWidth = contentWidth / maxHosts
-          const barW = Math.min(26, Math.max(12, baseWidth * 0.9))
-          for (const sid of serverIds) {
-            const link = layout.links.find(l => (l.a === sid && l.b === id) || (l.b === sid && l.a === id))!
-            const qLevel = getLinkQueue(link, id)
-            const cx = Math.min(Math.max(positions.get(sid)!.x, left + 24), right - 24)
-            drawQueueBar(cx, barW, hostRowTop, rowHeight, qLevel, `${id}:${sid}`, 'down')
-          }
-        }
-      } else {
-        // Spine rectangle widened to ToR span with per-link queues to ToRs
-        const torIds = layout.nodes.filter(nn => nn.id.startsWith('tor')).map(nn => nn.id)
-        const torXs = torIds.map(id => positions.get(id)!.x)
-        const torMin = Math.min(...torXs)
-        const torMax = Math.max(...torXs)
-        const span = Math.max(120, torMax - torMin + 60)
-        const width = span / Math.max(1, torIds.length)
-        const left = p.x - width / 2
-        const right = p.x + width / 2
-        const spineBaseHeight = 42
-        const spineQueueBaseHeight = spineBaseHeight - 20
-        const h = spineBaseHeight * 2
-        const top = p.y - h / 2
-        const bottom = p.y + h / 2
-        g.roundRect(left, top, right - left, h, 4).fill({ color: fill }).stroke({ color: 0x0, width: strokeW })
-
-        const sortedTorIds = torIds.slice().sort((a, b) => positions.get(a)!.x - positions.get(b)!.x)
-        const spanWidth = right - left
-        const marginX = Math.min(28, Math.max(10, spanWidth * 0.12))
-        const usableWidth = Math.max(0, spanWidth - marginX * 2)
-        const anchors: Record<string, number> = {}
-
-        if (sortedTorIds.length === 1) {
-          anchors[sortedTorIds[0]] = left + spanWidth / 2
-        } else if (usableWidth <= 0) {
-          sortedTorIds.forEach((tid) => {
-            anchors[tid] = left + spanWidth / 2
-          })
-        } else {
-          sortedTorIds.forEach((tid, idx) => {
-            const t = sortedTorIds.length === 1 ? 0.5 : idx / (sortedTorIds.length - 1)
-            anchors[tid] = left + marginX + usableWidth * t
-          })
-        }
-
-        spineGeom.set(id, { left, right, top, bottom, anchors })
-
-        // queues aligned above each ToR using shared anchors
-        const maxTors = Math.max(1, sortedTorIds.length)
-        const baseBarWidth = usableWidth / maxTors
-        const barWidth = Math.min(26, Math.max(12, baseBarWidth * 0.9))
-        const labelY = top + 10
-        const innerTop = labelY + 6
-        const innerBottom = bottom - 4
-        const innerHeightRaw = Math.max(6, innerBottom - innerTop)
-        const queueHeightTarget = Math.min(innerHeightRaw, spineQueueBaseHeight * 2)
-        const queueOffset = (innerHeightRaw - queueHeightTarget) / 2
-        const queueTop = innerTop + queueOffset
-        const queueBottom = queueTop + queueHeightTarget
-        sortedTorIds.forEach((tid) => {
-          const link = layout.links.find(l => (l.a === tid && l.b === id) || (l.b === tid && l.a === id))
-          const anchorCenter = anchors[tid] ?? (left + spanWidth / 2)
-          const safeCenter = Math.min(Math.max(anchorCenter, left + barWidth / 2 + 4), right - barWidth / 2 - 4)
-          const barLeft = safeCenter - barWidth / 2
-          const qLevel = link ? getLinkQueue(link, id) : 0
-          g.roundRect(barLeft, queueTop, barWidth, queueHeightTarget, 2).fill({ color: 0x1e2430, alpha: 0.9 })
-          const norm = clamp01(qLevel / maxQueueKb)
-          const filledH = queueHeightTarget * norm
-          g.roundRect(barLeft, queueBottom - filledH, barWidth, filledH, 2).fill({ color: colorForQueueUsage(norm), alpha: 0.95 })
-          useQueueLabel(`${id}:${tid}`, safeCenter, queueTop + queueHeightTarget / 2, Math.min(qLevel, maxQueueKb), 0.5)
-        })
-      }
-    } else {
-      const radius = 14
-      g.circle(p.x, p.y, radius).fill({ color: fill }).stroke({ color: 0x0, width: strokeW })
-      // queue bar underneath (matches switch styling, vertical fill)
-      const barW = 14
-      const barH = 32
-      const top = p.y + radius + 6
-      const bottom = top + barH
-      const bx = p.x - barW / 2
-      g.roundRect(bx, top, barW, barH, 3).fill({ color: 0x1e2430, alpha: 0.9 })
-      const norm = clamp01(queue / maxQueueKb)
-      const filledH = barH * norm
-      g.roundRect(bx, bottom - filledH, barW, filledH, 3).fill({ color: colorForQueueUsage(norm), alpha: 0.95 })
-      if (SHOW_HOST_BUCKETS) {
-        const bucketSpacing = 6
-        const bucketWidth = barW + 4
-        const bucketLeft = p.x - bucketWidth / 2
-        const bucketTop = bottom + bucketSpacing
-        const bucketHeight = barH
-        const bucketRadius = 4
-        const bucketStroke = { color: 0xcbd5f5, width: 2, alpha: 0.85 } as const
-        g.roundRect(bucketLeft, bucketTop, bucketWidth, bucketHeight, bucketRadius).stroke(bucketStroke)
-        const handleWidth = Math.max(6, bucketWidth * 0.6)
-        const handleLeft = bucketLeft + (bucketWidth - handleWidth) / 2
-        const handleRight = handleLeft + handleWidth
-        const handleTop = bucketTop - 6
-        g.moveTo(handleLeft, bucketTop)
-        g.quadraticCurveTo(bucketLeft + bucketWidth / 2, handleTop, handleRight, bucketTop)
-        g.stroke(bucketStroke)
-      }
-      const label = hostLabels.get(id)
-      if (label) {
-        label.visible = true
-        label.position.set(p.x, p.y)
-      }
-    }
-    // no per-node label
   }
 
   function drawLink(id: string, usage: LinkSnapshot | undefined) {
@@ -656,9 +872,8 @@ export function buildScene(root: Container, layout: Layout) {
       }
     }
     if (DRAW_NODES) {
-      for (const n of layout.nodes) {
-        const q = snapshot.nodes[n.id]?.queue ?? 0
-        drawNode(n.id, q, snapshot.t, snapshot)
+      for (const visual of nodeVisuals.values()) {
+        visual.update(snapshot)
       }
     }
     for (const [key, label] of queueLabels) {
@@ -688,6 +903,7 @@ export function buildScene(root: Container, layout: Layout) {
         hostLabel.position.set(p.x, p.y)
       }
     }
+    rebuildNodeVisuals()
     placeTierLabels()
     const { minX, minY, maxX, maxY } = getClampBounds()
     const worldW = maxX - minX
