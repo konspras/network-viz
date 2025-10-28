@@ -19,7 +19,7 @@ import type { Layout, Snapshot, NodeDef, LinkDef, LinkSnapshot } from './types'
 export function buildScene(root: Container, layout: Layout) {
   const DRAW_LINKS = true // Toggle link rendering (disabled while debugging GPU allocations)
   const DRAW_LINK_FILL = true // Toggle link fill (disabled while debugging GPU allocations)
-  const DRAW_NODES = false // Toggle node rendering (disabled while debugging GPU allocations)
+  const DRAW_NODES = true // Toggle node rendering (disabled while debugging GPU allocations)
   const SHOW_QUEUE_LABELS = false // Toggle queue labels (disabled while hunting GPU leak)
   const SHOW_HOST_BUCKETS = false // Toggle host bucket graphics (disabled during GPU leak hunt)
   const SHOW_TOR_SPINE_QUEUES = false // Toggle ToR->spine queue bars (disabled during GPU leak hunt)
@@ -89,27 +89,57 @@ export function buildScene(root: Container, layout: Layout) {
       baseLinkGeometry.refCount += 1
     }
   }
+  const DASH_LENGTH = 18
+  const DASH_GAP = 10
 
-  const createLinkGraphic = () => {
-    const g = new Graphics()
+  type LinkGraphicMeta = {
+    dashed: boolean
+    geometryReady: boolean
+    lastLength?: number
+  }
+
+  const getLinkGraphicMeta = (graphic: Graphics): LinkGraphicMeta => {
+    let meta = (graphic as any)._linkMeta as LinkGraphicMeta | undefined
+    if (!meta) {
+      meta = { dashed: false, geometryReady: false }
+      ;(graphic as any)._linkMeta = meta
+    }
+    return meta
+  }
+
+  const assignSolidGeometry = (graphic: Graphics) => {
     if (baseLinkGeometry) {
-      ;(g as any).geometry = baseLinkGeometry
+      ;(graphic as any).geometry = baseLinkGeometry
       incrementLinkGeometryRef()
     } else {
-      g.rect(0, -0.5, 1, 1).fill({ color: 0xffffff })
+      graphic.clear()
+      graphic.rect(0, -0.5, 1, 1).fill({ color: 0xffffff })
+    }
+  }
+
+  const createLinkGraphic = (dashed: boolean) => {
+    const g = new Graphics()
+    if (!dashed) {
+      assignSolidGeometry(g)
     }
     g.tint = 0xffffff
     g.alpha = 0.95
     g.visible = false
     g.position.set(0, 0)
     g.scale.set(1, 1)
+    const meta = getLinkGraphicMeta(g)
+    meta.dashed = dashed
+    meta.geometryReady = !dashed
+    meta.lastLength = dashed ? undefined : 1
     return g
   }
 
   for (const l of layout.links) {
     linkByEnds.set(l.id, l)
-    const forward = createLinkGraphic()
-    const reverse = createLinkGraphic()
+    const aNode = layout.nodes.find(n => n.id === l.a)!
+    const bNode = layout.nodes.find(n => n.id === l.b)!
+    const forward = createLinkGraphic(isUplink(aNode, bNode))
+    const reverse = createLinkGraphic(isUplink(bNode, aNode))
     linksLayer.addChild(forward)
     linksLayer.addChild(reverse)
     linkGfx.set(l.id, { forward, reverse })
@@ -440,14 +470,6 @@ export function buildScene(root: Container, layout: Layout) {
     // no per-node label
   }
 
-    // const isUplink = (from: NodeDef, to: NodeDef) => {
-    //   if (from.metricsKind === 'host' && to.metricsKind === 'tor') return true
-    //   if (from.metricsKind === 'tor' && to.metricsKind === 'aggr') return true
-    //   return false
-    // }
-    // const dashedForward = isUplink(aNode, bNode) && false
-    // const dashedReverse = isUplink(bNode, aNode) && false
-
   function drawLink(id: string, usage: LinkSnapshot | undefined) {
     const link = linkByEnds.get(id)!
     let a = positions.get(link.a)!
@@ -475,6 +497,8 @@ export function buildScene(root: Container, layout: Layout) {
     const cap = linkCapacityGbps()
     const normAB = clamp01(cap > 0 ? rawAB / cap : 0)
     const normBA = clamp01(cap > 0 ? rawBA / cap : 0)
+    const dashedForward = isUplink(aNode, bNode)
+    const dashedReverse = isUplink(bNode, aNode)
 
     // If tor-host link, start at bottom edge of ToR aligned to server x
     const hostRadius = 10
@@ -553,12 +577,28 @@ export function buildScene(root: Container, layout: Layout) {
     const colorAB = colorForLinkUsage(normAB)
     const colorBA = colorForLinkUsage(normBA)
 
-    updateLinkGraphic(visuals.forward, forwardStart, forwardEnd, widthAB, colorAB)
-    updateLinkGraphic(visuals.reverse, reverseStart, reverseEnd, widthBA, colorBA)
+    updateLinkGraphic(visuals.forward, forwardStart, forwardEnd, widthAB, colorAB, dashedForward)
+    updateLinkGraphic(visuals.reverse, reverseStart, reverseEnd, widthBA, colorBA, dashedReverse)
 
     if (DRAW_LINK_ARROWHEADS) {
       // Arrowheads disabled in transform-based link rendering path
     }
+  }
+
+  const buildDashedGeometry = (graphic: Graphics, length: number, dash = DASH_LENGTH, gap = DASH_GAP) => {
+    graphic.clear()
+    const pattern = Math.max(1, dash + gap)
+    let offset = 0
+    while (offset < length) {
+      const remaining = length - offset
+      const dashWidth = Math.min(dash, remaining)
+      if (dashWidth <= 0) break
+      graphic.rect(offset, -0.5, dashWidth, 1).fill({ color: 0xffffff })
+      offset += pattern
+    }
+    const meta = getLinkGraphicMeta(graphic)
+    meta.geometryReady = true
+    meta.lastLength = length
   }
 
   function updateLinkGraphic(
@@ -567,6 +607,7 @@ export function buildScene(root: Container, layout: Layout) {
     end: { x: number; y: number },
     thickness: number,
     color: number,
+    dashed: boolean,
   ) {
     const dx = end.x - start.x
     const dy = end.y - start.y
@@ -575,10 +616,32 @@ export function buildScene(root: Container, layout: Layout) {
       graphic.visible = false
       return
     }
+
+    const meta = getLinkGraphicMeta(graphic)
+    const lengthEps = 0.25
+    if (meta.dashed !== dashed) {
+      meta.dashed = dashed
+      meta.geometryReady = false
+      meta.lastLength = undefined
+      if (!dashed) {
+        assignSolidGeometry(graphic)
+        meta.geometryReady = true
+        meta.lastLength = 1
+      }
+    }
+
+    if (dashed) {
+      if (!meta.geometryReady || meta.lastLength === undefined || Math.abs(meta.lastLength - length) > lengthEps) {
+        buildDashedGeometry(graphic, length)
+      }
+      graphic.scale.set(1, thickness)
+    } else {
+      graphic.scale.set(length, thickness)
+    }
+
     graphic.visible = true
     graphic.position.set(start.x, start.y)
     graphic.rotation = Math.atan2(dy, dx)
-    graphic.scale.set(length, thickness)
     graphic.tint = color
   }
 
@@ -748,6 +811,12 @@ export function buildScene(root: Container, layout: Layout) {
   drawGridScreen()
 
   return { update, reset, layoutResize }
+}
+
+function isUplink(from: NodeDef, to: NodeDef) {
+  if (from.metricsKind === 'host' && to.metricsKind === 'tor') return true
+  if (from.metricsKind === 'tor' && to.metricsKind === 'aggr') return true
+  return false
 }
 
 function clamp01(x: number) { return Math.min(1, Math.max(0, x)) }
