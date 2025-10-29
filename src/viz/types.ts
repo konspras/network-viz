@@ -38,6 +38,7 @@ export type LinkSnapshot = {
 
 export type NodeSnapshot = {
   queue: number
+  bucket?: number
 }
 
 export type Snapshot = {

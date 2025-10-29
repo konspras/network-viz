@@ -21,7 +21,7 @@ export function buildScene(root: Container, layout: Layout) {
   const DRAW_LINK_FILL = true // Toggle link fill (disabled while debugging GPU allocations)
   const DRAW_NODES = true // Toggle node rendering (disabled while debugging GPU allocations)
   const SHOW_QUEUE_LABELS = true // Toggle queue labels (disabled while hunting GPU leak)
-  const SHOW_HOST_BUCKETS = false // Toggle host bucket graphics (disabled during GPU leak hunt)
+  const SHOW_HOST_BUCKETS = true // Toggle host bucket graphics (disabled during GPU leak hunt)
   const SHOW_HOST_QUEUES = false // Toggle host queue bars beneath endpoints
   const SHOW_TOR_SPINE_QUEUES = true // Toggle ToR->spine queue bars (disabled during GPU leak hunt)
   const SHOW_PACKET_FLOW = true // Toggle animated packet flow along links
@@ -33,6 +33,7 @@ export function buildScene(root: Container, layout: Layout) {
   const PACKET_SPEED = 0.6 // Constant per-frame speed multiplier
   const PACKET_STEP = 0.02 // Constant progress increment per frame
   const QUEUE_MAX_KB = 5000
+  const HOST_BUCKET_MAX_BYTES = 200000
   // screen-space grid layer (infinite grid) + world container
   const gridLayer = new Graphics()
   root.addChild(gridLayer)
@@ -113,6 +114,14 @@ export function buildScene(root: Container, layout: Layout) {
     valueSource: QueueValueSource
     maxValue: number
     label?: QueueLabelDescriptor
+  }
+
+  type BucketVisual = {
+    fill: Graphics
+    width: number
+    height: number
+    nodeId: string
+    maxValue: number
   }
 
   type NodeVisual = {
@@ -376,6 +385,7 @@ export function buildScene(root: Container, layout: Layout) {
   function createEndpointNodeVisual(node: NodeDef): NodeVisual {
     const disposables: Graphics[] = []
     const queueVisuals: QueueVisual[] = []
+    const bucketVisuals: BucketVisual[] = []
     const pos = positions.get(node.id)!
     const fillColor = nodeFillColor(node)
 
@@ -386,41 +396,25 @@ export function buildScene(root: Container, layout: Layout) {
     nodesLayer.addChild(body)
     disposables.push(body)
 
+    const barW = 14
+    const barH = 32
+    const queueTop = pos.y + radius + 6
+    const queueBottom = queueTop + barH
+
     if (SHOW_HOST_QUEUES) {
-      const barW = 14
-      const barH = 32
-      const top = pos.y + radius + 6
-      const bottom = top + barH
       const barBg = new Graphics()
-      barBg.roundRect(pos.x - barW / 2, top, barW, barH, 3).fill({ color: 0x1e2430, alpha: 0.9 })
+      barBg
+        .roundRect(pos.x - barW / 2, queueTop, barW, barH, 3)
+        .fill({ color: 0x111827, alpha: 0.95 })
+        .stroke({ color: 0xf8fafc, width: 1, alpha: 0.6 })
       nodesLayer.addChild(barBg)
       disposables.push(barBg)
 
-      if (SHOW_HOST_BUCKETS && node.type === 'host') {
-        const bucketSpacing = 6
-        const bucketWidth = barW + 4
-        const bucketLeft = pos.x - bucketWidth / 2
-        const bucketTop = bottom + bucketSpacing
-        const bucketHeight = barH
-        const bucketRadius = 4
-        const bucketStroke = { color: 0xcbd5f5, width: 2, alpha: 0.85 } as const
-        const bucket = new Graphics()
-        bucket.roundRect(bucketLeft, bucketTop, bucketWidth, bucketHeight, bucketRadius).stroke(bucketStroke)
-        const handleWidth = Math.max(6, bucketWidth * 0.6)
-        const handleLeft = bucketLeft + (bucketWidth - handleWidth) / 2
-        const handleRight = handleLeft + handleWidth
-        const handleTop = bucketTop - 6
-        bucket.moveTo(handleLeft, bucketTop)
-        bucket.quadraticCurveTo(bucketLeft + bucketWidth / 2, handleTop, handleRight, bucketTop)
-        bucket.stroke(bucketStroke)
-        nodesLayer.addChild(bucket)
-        disposables.push(bucket)
-      }
-
       const fill = createQueueFillGraphic('bottom')
-      fill.position.set(pos.x, bottom)
+      fill.position.set(pos.x, queueBottom)
       fill.scale.x = barW
       fill.scale.y = 0
+      fill.alpha = 1
       nodesLayer.addChild(fill)
       disposables.push(fill)
       queueVisuals.push({
@@ -430,6 +424,46 @@ export function buildScene(root: Container, layout: Layout) {
         anchor: 'bottom',
         valueSource: { kind: 'node', nodeId: node.id },
         maxValue: maxQueueKb,
+      })
+    }
+
+    if (SHOW_HOST_BUCKETS && node.type === 'host') {
+      const bucketSpacing = 6
+      const bucketWidth = barW + 4
+      const bucketLeft = pos.x - bucketWidth / 2
+      const anchorBottom = SHOW_HOST_QUEUES ? queueBottom : queueTop
+      const bucketTop = anchorBottom + bucketSpacing
+      const bucketHeight = barH
+      const bucketBottom = bucketTop + bucketHeight
+      const bucketRadius = 4
+      const bucketFill = { color: 0x1f2a37, alpha: 0.05 } as const
+      const bucketStroke = { color: 0xe2e8f0, width: 2, alpha: 0.95 } as const
+
+      const fill = createQueueFillGraphic('bottom')
+      fill.position.set(pos.x, bucketBottom)
+      fill.scale.x = bucketWidth
+      fill.scale.y = 0
+      fill.alpha = 1
+      const bucket = new Graphics()
+      bucket.roundRect(bucketLeft, bucketTop, bucketWidth, bucketHeight, bucketRadius).fill(bucketFill).stroke(bucketStroke)
+      const handleWidth = Math.max(6, bucketWidth * 0.6)
+      const handleLeft = bucketLeft + (bucketWidth - handleWidth) / 2
+      const handleRight = handleLeft + handleWidth
+      const handleTop = bucketTop - 6
+      bucket.moveTo(handleLeft, bucketTop)
+      bucket.quadraticCurveTo(bucketLeft + bucketWidth / 2, handleTop, handleRight, bucketTop)
+      bucket.stroke(bucketStroke)
+
+      const bucketContainer = new Container()
+      bucketContainer.addChild(fill, bucket)
+      nodesLayer.addChild(bucketContainer)
+      disposables.push(bucketContainer)
+      bucketVisuals.push({
+        fill,
+        width: bucketWidth,
+        height: bucketHeight,
+        nodeId: node.id,
+        maxValue: HOST_BUCKET_MAX_BYTES,
       })
     }
 
@@ -445,6 +479,9 @@ export function buildScene(root: Container, layout: Layout) {
         }
         for (const queue of queueVisuals) {
           updateQueueVisual(queue, snapshot)
+        }
+        for (const bucket of bucketVisuals) {
+          updateBucketVisual(bucket, snapshot)
         }
       },
       destroy() {
@@ -761,6 +798,20 @@ export function buildScene(root: Container, layout: Layout) {
       const displayValue = Math.max(0, value)
       useQueueLabel(visual.label.key, visual.label.position.x, visual.label.position.y, displayValue, visual.label.anchorY)
     }
+  }
+
+  function updateBucketVisual(visual: BucketVisual, snapshot: Snapshot) {
+    const nodeSnapshot = snapshot.nodes[visual.nodeId]
+    if (!nodeSnapshot || typeof nodeSnapshot.bucket !== 'number') {
+      visual.fill.visible = false
+      return
+    }
+    const value = Math.max(0, nodeSnapshot.bucket)
+    const norm = clamp01(visual.maxValue > 0 ? value / visual.maxValue : 0)
+    visual.fill.scale.x = visual.width
+    visual.fill.scale.y = visual.height * norm
+    visual.fill.tint = 0x7dd3fc
+    visual.fill.visible = norm > 0
   }
 
   const hidePacketGroup = (packets: PacketVisual[]) => {

@@ -79,6 +79,31 @@ function zeroBaseTimestamps(ts: Float64Array) {
   }
 }
 
+function parseBudgetCsv(
+  text: string,
+  reuseTimestamps?: Float64Array,
+): { timestamps?: Float64Array; values: Float32Array } {
+  const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0)
+  if (lines.length <= 1) {
+    throw new Error('Budget CSV missing data rows')
+  }
+  const count = lines.length - 1
+  const values = new Float32Array(count)
+  let timestamps: Float64Array | undefined
+  if (!reuseTimestamps) {
+    timestamps = new Float64Array(count)
+  }
+  for (let i = 1; i < lines.length; i++) {
+    const parts = lines[i].split(',')
+    if (parts.length < 2) continue
+    if (!reuseTimestamps && timestamps) {
+      timestamps[i - 1] = Number(parts[0])
+    }
+    values[i - 1] = Number(parts[1])
+  }
+  return { timestamps, values }
+}
+
 class CsvDataSource implements TimeSeriesDataSource {
   readonly layout: Layout
   readonly events = []
@@ -86,13 +111,20 @@ class CsvDataSource implements TimeSeriesDataSource {
 
   private readonly timestamps: Float64Array
   private readonly linkSeries: Map<string, LinkSeries>
+  private readonly hostBudgetSeries: Map<number, Float32Array>
   private lastIndex = 0
   private lastTime = 0
 
-  constructor(layout: Layout, timestamps: Float64Array, series: Map<string, LinkSeries>) {
+  constructor(
+    layout: Layout,
+    timestamps: Float64Array,
+    series: Map<string, LinkSeries>,
+    hostBudgets: Map<number, Float32Array>,
+  ) {
     this.layout = layout
     this.timestamps = timestamps
     this.linkSeries = series
+    this.hostBudgetSeries = hostBudgets
     let duration = 0
     if (timestamps.length) {
       duration = timestamps[timestamps.length - 1]
@@ -184,7 +216,15 @@ class CsvDataSource implements TimeSeriesDataSource {
     for (const node of this.layout.nodes) {
       const count = nodeQueueCount[node.id]
       const avg = count > 0 ? nodeQueueSum[node.id] / count : 0
-      nodes[node.id] = { queue: Math.max(0, avg) }
+      let bucketValue: number | undefined
+      if (node.type === 'host') {
+        const budgetSeries = this.hostBudgetSeries.get(node.metricsId)
+        if (budgetSeries) {
+          const interpolated = this.interpolate(budgetSeries, idx, nextIdx, frac)
+          bucketValue = Math.max(0, interpolated)
+        }
+      }
+      nodes[node.id] = { queue: Math.max(0, avg), bucket: bucketValue }
     }
 
     return { t: clamped, links, nodes }
@@ -194,6 +234,7 @@ class CsvDataSource implements TimeSeriesDataSource {
 export async function loadScenarioData(selection: ScenarioSelection): Promise<TimeSeriesDataSource> {
   const layout = makeLeafSpineLayout()
   const series = new Map<string, LinkSeries>()
+  const hostBudgetSeries = new Map<number, Float32Array>()
   let timestamps: Float64Array | undefined
 
   const basePath = joinUrlSegments(
@@ -273,6 +314,52 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
   if (!timestamps) {
     throw new Error('Unable to load any CSV time series (timestamps missing)')
   }
+  const baselineTimestamps = timestamps
+
+  const budgetBasePath = joinUrlSegments(
+    'data',
+    selection.scenario,
+    'data',
+    selection.protocol,
+    selection.load,
+    'output',
+    'cc',
+    'budget_bytes',
+    `load_${selection.load}`,
+  )
+
+  const hostNodes = layout.nodes.filter((node) => node.type === 'host')
+  await Promise.all(
+    hostNodes.map(async (node) => {
+      const hostPath = joinUrlSegments(budgetBasePath, `host_${node.metricsId}`)
+      const url = `${hostPath}/budget_bytes.csv`
+      try {
+        const response = await fetch(url)
+        if (!response.ok) {
+          if (response.status !== 404) {
+            console.warn(`Unable to fetch host budget CSV (${response.status}): ${url}`)
+          }
+          return
+        }
+        const text = await response.text()
+        const parsed = parseBudgetCsv(text, baselineTimestamps)
+        let values = parsed.values
+        if (values.length !== baselineTimestamps.length) {
+          console.warn(`Host budget CSV length mismatch, adjusting to baseline: ${url}`)
+          if (values.length > baselineTimestamps.length) {
+            values = values.subarray(0, baselineTimestamps.length)
+          } else {
+            const padded = new Float32Array(baselineTimestamps.length)
+            padded.set(values)
+            values = padded
+          }
+        }
+        hostBudgetSeries.set(node.metricsId, values)
+      } catch (err) {
+        console.warn(`Error loading host budget CSV ${url}`, err)
+      }
+    }),
+  )
 
   console.log('[viz] Loaded scenario data', {
     scenario: selection.scenario,
@@ -281,5 +368,5 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
     links: series.size,
   })
 
-  return new CsvDataSource(layout, timestamps, series)
+  return new CsvDataSource(layout, baselineTimestamps, series, hostBudgetSeries)
 }
