@@ -24,6 +24,14 @@ export function buildScene(root: Container, layout: Layout) {
   const SHOW_HOST_BUCKETS = false // Toggle host bucket graphics (disabled during GPU leak hunt)
   const SHOW_HOST_QUEUES = false // Toggle host queue bars beneath endpoints
   const SHOW_TOR_SPINE_QUEUES = true // Toggle ToR->spine queue bars (disabled during GPU leak hunt)
+  const SHOW_PACKET_FLOW = true // Toggle animated packet flow along links
+  const SHOW_SPINE_DASHBOARD = false // Toggle dashboard gauges above spines
+  const PACKETS_PER_DIRECTION = 25
+  // const PACKET_MIN_SCALE = 100 // Zoom threshold for packets (increase to require deeper zoom)
+  const PACKET_MIN_SCALE = 0.5 // Zoom threshold for packets (increase to require deeper zoom)
+  // const PACKET_MIN_SCALE = 3.5 // Zoom threshold for packets (increase to require deeper zoom)
+  const PACKET_SPEED = 0.6 // Constant per-frame speed multiplier
+  const PACKET_STEP = 0.02 // Constant progress increment per frame
   // screen-space grid layer (infinite grid) + world container
   const gridLayer = new Graphics()
   root.addChild(gridLayer)
@@ -34,6 +42,7 @@ export function buildScene(root: Container, layout: Layout) {
   const nodesLayer = new Container()
   const linksLayer = new Container()
   const packetsLayer = new Container()
+  packetsLayer.visible = false
   const labelsLayer = new Container()
   world.addChild(linksLayer, nodesLayer, packetsLayer, labelsLayer)
 
@@ -53,9 +62,12 @@ export function buildScene(root: Container, layout: Layout) {
   const hostLabelLayer = new Container()
   labelsLayer.addChild(hostLabelLayer)
   const hostLabels = new Map<string, Text>()
+  const dashboardLayer = new Container()
+  labelsLayer.addChild(dashboardLayer)
+  const dashboardVisuals: DashboardVisual[] = []
   const maxQueueKb = 700
   const nodeColors = {
-    host: 0xe5e7eb,
+    host: 0xfce2c4,
     tor: 0xe5e7eb,
     spine: 0xe5e7eb,
     switch: 0xe2e8f0,
@@ -63,7 +75,7 @@ export function buildScene(root: Container, layout: Layout) {
 
   const colorForLinkUsage = (u: number) => {
     const value = clamp01(u)
-    if (value <= 0.01) return 0x767B84
+    if (value <= 0.01) return 0x6b7280
     if (value < 0.6) return lerpColor(0x22c55e, 0xf97316, (value - 0.01) / 0.59)
     return lerpColor(0xf97316, 0xef4444, (value - 0.6) / 0.4)
   }
@@ -107,6 +119,12 @@ export function buildScene(root: Container, layout: Layout) {
     destroy: () => void
   }
 
+  type DashboardVisual = {
+    container: Container
+    title: Text
+    value: Text
+  }
+
   const baseQueueTemplate = new Graphics()
   baseQueueTemplate.rect(-0.5, 0, 1, 1).fill({ color: 0xffffff })
   const baseQueueGeometry: any = (baseQueueTemplate as any).geometry
@@ -130,6 +148,45 @@ export function buildScene(root: Container, layout: Layout) {
     g.tint = 0xffffff
     return g
   }
+
+  type PacketVisual = {
+    graphic: Graphics
+    progress: number
+    speed: number
+    jitterMag: number
+    jitterPhase: number
+  }
+
+  const basePacketTemplate = new Graphics()
+  basePacketTemplate.circle(0, 0, 1.6).fill({ color: 0xffffff })
+  const basePacketGeometry: any = (basePacketTemplate as any).geometry
+  const incrementPacketGeometryRef = () => {
+    if (basePacketGeometry && typeof basePacketGeometry.refCount === 'number') {
+      basePacketGeometry.refCount += 1
+    }
+  }
+
+  const createPacketVisual = (initialProgress: number): PacketVisual => {
+    const graphic = new Graphics()
+    if (basePacketGeometry) {
+      ;(graphic as any).geometry = basePacketGeometry
+      incrementPacketGeometryRef()
+    } else {
+      graphic.circle(0, 0, 1.6).fill({ color: 0xffffff })
+    }
+    graphic.visible = false
+    graphic.alpha = 0.85
+    packetsLayer.addChild(graphic)
+    return {
+      graphic,
+      progress: initialProgress % 1,
+      speed: 0,
+      jitterMag: 0.75 + Math.random() * 0.25,
+      jitterPhase: Math.random() * Math.PI * 2,
+    }
+  }
+
+  const linkPackets = new Map<string, { forward: PacketVisual[]; reverse: PacketVisual[] }>()
 
   const margin = 60
   const toPx = (n: NodeDef) => {
@@ -221,6 +278,74 @@ export function buildScene(root: Container, layout: Layout) {
       const visual = createNodeVisual(node)
       nodeVisuals.set(node.id, visual)
     }
+  }
+
+  function rebuildDashboard() {
+    dashboardLayer.removeChildren()
+    dashboardVisuals.length = 0
+    if (!SHOW_SPINE_DASHBOARD) {
+      dashboardLayer.visible = false
+      return
+    }
+
+    dashboardLayer.visible = true
+    const descriptors = [
+      { title: 'Queueing', color: 0xf97316 },
+      { title: 'Throughput', color: 0x38bdf8 },
+    ] as const
+    const radius = 62
+
+    for (const desc of descriptors) {
+      const container = new Container()
+      const face = new Graphics()
+      face.circle(0, 0, radius).fill({ color: 0x111827, alpha: 0.94 }).stroke({ color: 0xe2e8f0, width: 4 })
+      const ring = new Graphics()
+      ring.circle(0, 0, radius - 10).stroke({ color: desc.color, width: 4, alpha: 0.65 })
+      const notch = new Graphics()
+      notch.rect(-3, -radius + 14, 6, 20).fill({ color: desc.color, alpha: 0.9 })
+
+      const value = new Text({
+        text: '--',
+        style: { fill: 0xf8fafc, fontSize: 26, fontWeight: '700' },
+      })
+      value.anchor.set(0.5)
+
+      const title = new Text({
+        text: desc.title,
+        style: { fill: 0xe2e8f0, fontSize: 15, fontWeight: '600' },
+      })
+      title.anchor.set(0.5, 0)
+      title.position.set(0, radius + 18)
+
+      container.addChild(face, ring, notch, value, title)
+      dashboardLayer.addChild(container)
+      dashboardVisuals.push({ container, title, value })
+    }
+
+    updateDashboardLayout()
+  }
+
+  function updateDashboardLayout() {
+    if (!SHOW_SPINE_DASHBOARD || dashboardVisuals.length === 0) return
+    const spines = layout.nodes.filter((node) => node.id.startsWith('sp'))
+    const positionsList = spines
+      .map((node) => positions.get(node.id))
+      .filter((pos): pos is { x: number; y: number } => !!pos)
+    if (!positionsList.length) {
+      dashboardLayer.visible = false
+      return
+    }
+
+    dashboardLayer.visible = true
+    const centerX = positionsList.reduce((acc, pos) => acc + pos.x, 0) / positionsList.length
+    const minY = positionsList.reduce((acc, pos) => Math.min(acc, pos.y), Infinity)
+    const baseY = minY - 140
+    const spacing = 180
+    const startX = centerX - ((dashboardVisuals.length - 1) * spacing) / 2
+
+    dashboardVisuals.forEach((visual, idx) => {
+      visual.container.position.set(startX + idx * spacing, baseY)
+    })
   }
 
   function createNodeVisual(node: NodeDef): NodeVisual {
@@ -621,6 +746,71 @@ export function buildScene(root: Container, layout: Layout) {
     }
   }
 
+  const hidePacketGroup = (packets: PacketVisual[]) => {
+    for (const packet of packets) {
+      packet.graphic.visible = false
+    }
+  }
+
+  const hideAllPackets = () => {
+    for (const packets of linkPackets.values()) {
+      hidePacketGroup(packets.forward)
+      hidePacketGroup(packets.reverse)
+    }
+  }
+
+  let packetDelta = 0
+  let packetsAllowed = false
+
+  const updatePacketGroup = (
+    packets: PacketVisual[],
+    start: { x: number; y: number },
+    end: { x: number; y: number },
+    intensity: number,
+    color: number,
+  ) => {
+    if (!packetsAllowed) {
+      hidePacketGroup(packets)
+      return
+    }
+    if (intensity <= 0) {
+      hidePacketGroup(packets)
+      return
+    }
+    const dx = end.x - start.x
+    const dy = end.y - start.y
+    const len = Math.hypot(dx, dy)
+    if (!len) {
+      hidePacketGroup(packets)
+      return
+    }
+    const dirX = dx / len
+    const dirY = dy / len
+    const density = clamp01(intensity)
+    const activeCount = Math.max(1, Math.round(density * packets.length))
+    const alpha = 0.33 + 0.67 * density
+    const jitterScale = 1 + density * 2
+    for (let i = 0; i < packets.length; i++) {
+      const packet = packets[i]
+      if (i < activeCount) {
+        packet.speed = PACKET_SPEED
+        packet.progress = (packet.progress + packetDelta * packet.speed) % 1
+        const offset = packet.progress * len
+        const baseX = start.x + dirX * offset
+        const baseY = start.y + dirY * offset
+        const jitter = Math.sin(packet.progress * Math.PI * 2 + packet.jitterPhase) * packet.jitterMag * jitterScale
+        const px = baseX + (-dirY) * jitter
+        const py = baseY + dirX * jitter
+        packet.graphic.position.set(px, py)
+        packet.graphic.tint = color
+        packet.graphic.alpha = alpha
+        packet.graphic.visible = true
+      } else {
+        packet.graphic.visible = false
+      }
+    }
+  }
+
   for (const l of layout.links) {
     linkByEnds.set(l.id, l)
     const aNode = layout.nodes.find(n => n.id === l.a)!
@@ -630,9 +820,18 @@ export function buildScene(root: Container, layout: Layout) {
     linksLayer.addChild(forward)
     linksLayer.addChild(reverse)
     linkGfx.set(l.id, { forward, reverse })
+    const forwardPackets: PacketVisual[] = []
+    const reversePackets: PacketVisual[] = []
+    for (let i = 0; i < PACKETS_PER_DIRECTION; i++) {
+      const base = i / PACKETS_PER_DIRECTION
+      forwardPackets.push(createPacketVisual(base))
+      reversePackets.push(createPacketVisual(base))
+    }
+    linkPackets.set(l.id, { forward: forwardPackets, reverse: reversePackets })
   }
 
   rebuildNodeVisuals()
+  rebuildDashboard()
 
   // compute bounds of topology in world coords (include labels offset)
   function computeBounds() {
@@ -786,6 +985,12 @@ export function buildScene(root: Container, layout: Layout) {
     updateLinkGraphic(visuals.forward, forwardStart, forwardEnd, widthAB, colorAB, dashedForward)
     updateLinkGraphic(visuals.reverse, reverseStart, reverseEnd, widthBA, colorBA, dashedReverse)
 
+    const packetState = linkPackets.get(id)
+    if (packetState) {
+      updatePacketGroup(packetState.forward, forwardStart, forwardEnd, normAB, colorAB)
+      updatePacketGroup(packetState.reverse, reverseStart, reverseEnd, normBA, colorBA)
+    }
+
   }
 
   const buildDashedGeometry = (graphic: Graphics, length: number, dash = DASH_LENGTH, gap = DASH_GAP) => {
@@ -853,9 +1058,20 @@ export function buildScene(root: Container, layout: Layout) {
   function update(snapshot: Snapshot) {
     queueLabelsUsed.clear()
     for (const label of hostLabels.values()) label.visible = false
-    if (DRAW_LINKS) {
+    packetDelta = SHOW_PACKET_FLOW ? PACKET_STEP : 0
+    packetsAllowed = SHOW_PACKET_FLOW && scale >= PACKET_MIN_SCALE
+    linksLayer.visible = !(DRAW_LINKS && packetsAllowed)
+    packetsLayer.visible = packetsAllowed && SHOW_PACKET_FLOW
+    if (packetsAllowed && SHOW_PACKET_FLOW) {
       for (const l of layout.links) {
         drawLink(l.id, snapshot.links[l.id])
+      }
+    } else {
+      hideAllPackets()
+      if (DRAW_LINKS) {
+        for (const l of layout.links) {
+          drawLink(l.id, snapshot.links[l.id])
+        }
       }
     }
     if (DRAW_NODES) {
@@ -872,7 +1088,9 @@ export function buildScene(root: Container, layout: Layout) {
   }
 
   function reset() {
-    // nothing to reset (packets removed)
+    hideAllPackets()
+    packetsLayer.visible = false
+    packetDelta = 0
   }
 
   let autoFitApplied = false
@@ -891,6 +1109,7 @@ export function buildScene(root: Container, layout: Layout) {
       }
     }
     rebuildNodeVisuals()
+    rebuildDashboard()
     placeTierLabels()
     const { minX, minY, maxX, maxY } = getClampBounds()
     const worldW = maxX - minX
@@ -915,6 +1134,7 @@ export function buildScene(root: Container, layout: Layout) {
     }
     clampWorld()
     drawGridScreen()
+    updateDashboardLayout()
   }
 
   // Tier labels: part of the world (terrain-like), increase resolution for crisp zoom

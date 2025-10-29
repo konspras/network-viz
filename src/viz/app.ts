@@ -61,20 +61,14 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
   }
 
   // Main ticker: advance time and update visuals based on time series
-  let frameCount = 0
   app.ticker.add(() => {
     if (!playing) return
     const dt = (app.ticker.deltaMS / 1000) * speed
     simTime = Math.min(simTime + dt, duration)
-    // if (frameCount % 10 === 0) {
-      renderSnapshot(simTime)
-      notifyTime(simTime)
-    // }
+    renderSnapshot(simTime)
+    notifyTime(simTime)
     if (simTime >= duration) {
       playing = false
-    }
-    if (++frameCount % 60 === 0) {
-      console.log('[viz] ticker', { simTime, dt, speed })
     }
   })
 
@@ -82,37 +76,8 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
   app.ticker.add(() => {
     debugTracker.frames++
     if (debugTracker.frames % 120 !== 0) return
-    const rendererAny = app.renderer as any
-    const managedTextures = rendererAny?.texture?.managedTextures
-    const textureCount = Array.isArray(managedTextures) ? managedTextures.length : 'n/a'
     if (textureGC && textureGC.active) {
       textureGC.run()
-    }
-    const debugStats = (globalThis as any).__vizDebug
-    const labelUpdates = debugStats?.labelTextUpdates ?? 'n/a'
-    const textureSystem = rendererAny?.texture
-    const gpuSourceCount = textureSystem && textureSystem._gpuSources ? Object.keys(textureSystem._gpuSources).length : 'n/a'
-    const gpuSamplerCount = textureSystem && textureSystem._gpuSamplers ? Object.keys(textureSystem._gpuSamplers).length : 'n/a'
-    const textureViewCount = textureSystem && textureSystem._textureViewHash ? Object.keys(textureSystem._textureViewHash).length : 'n/a'
-    const bindGroupCount = textureSystem && textureSystem._bindGroupHash ? Object.keys(textureSystem._bindGroupHash).length : 'n/a'
-    const geometrySystem = rendererAny?.geometry
-    const geometryCount = geometrySystem && geometrySystem._geometries ? Object.keys(geometrySystem._geometries).length : 'n/a'
-    const shaderSystem = rendererAny?.shader
-    const programCount = shaderSystem && shaderSystem._programs ? shaderSystem._programs.size ?? Object.keys(shaderSystem._programs).length : 'n/a'
-
-    console.log('[viz][debug] frame', debugTracker.frames, {
-      textureCount,
-      gpuSourceCount,
-      gpuSamplerCount,
-      textureViewCount,
-      bindGroupCount,
-      geometryCount,
-      programCount,
-      labelUpdates,
-      playing,
-    })
-    if (debugStats) {
-      debugStats.labelTextUpdates = 0
     }
   })
 
