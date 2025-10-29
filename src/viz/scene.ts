@@ -25,13 +25,14 @@ export function buildScene(root: Container, layout: Layout) {
   const SHOW_HOST_QUEUES = false // Toggle host queue bars beneath endpoints
   const SHOW_TOR_SPINE_QUEUES = true // Toggle ToR->spine queue bars (disabled during GPU leak hunt)
   const SHOW_PACKET_FLOW = true // Toggle animated packet flow along links
-  const SHOW_SPINE_DASHBOARD = false // Toggle dashboard gauges above spines
+  const SHOW_SPINE_DASHBOARD = true // Toggle dashboard gauges above spines
   const PACKETS_PER_DIRECTION = 25
   // const PACKET_MIN_SCALE = 100 // Zoom threshold for packets (increase to require deeper zoom)
   const PACKET_MIN_SCALE = 0.5 // Zoom threshold for packets (increase to require deeper zoom)
   // const PACKET_MIN_SCALE = 3.5 // Zoom threshold for packets (increase to require deeper zoom)
   const PACKET_SPEED = 0.6 // Constant per-frame speed multiplier
   const PACKET_STEP = 0.02 // Constant progress increment per frame
+  const QUEUE_MAX_KB = 5000
   // screen-space grid layer (infinite grid) + world container
   const gridLayer = new Graphics()
   root.addChild(gridLayer)
@@ -121,8 +122,10 @@ export function buildScene(root: Container, layout: Layout) {
 
   type DashboardVisual = {
     container: Container
+    heading: Text
     title: Text
     value: Text
+    units: Text
   }
 
   const baseQueueTemplate = new Graphics()
@@ -290,36 +293,50 @@ export function buildScene(root: Container, layout: Layout) {
 
     dashboardLayer.visible = true
     const descriptors = [
-      { title: 'Queueing', color: 0xf97316 },
-      { title: 'Throughput', color: 0x38bdf8 },
+      { key: 'throughput', label: '', heading: 'Total Throughput', color: 0x38bdf8, units: 'Gbps' },
+      { key: 'queue', label: '', heading: 'Total Queuing', color: 0xf97316, units: 'KB' },
     ] as const
-    const radius = 62
+    const radius = 93
 
     for (const desc of descriptors) {
       const container = new Container()
       const face = new Graphics()
       face.circle(0, 0, radius).fill({ color: 0x111827, alpha: 0.94 }).stroke({ color: 0xe2e8f0, width: 4 })
       const ring = new Graphics()
-      ring.circle(0, 0, radius - 10).stroke({ color: desc.color, width: 4, alpha: 0.65 })
+      ring.circle(0, 0, radius - 14).stroke({ color: desc.color, width: 4, alpha: 0.65 })
       const notch = new Graphics()
       notch.rect(-3, -radius + 14, 6, 20).fill({ color: desc.color, alpha: 0.9 })
 
+      const heading = new Text({
+        text: desc.heading,
+        style: { fill: 0xf8fafc, fontSize: 20, fontWeight: '700' },
+      })
+      heading.anchor.set(0.5, 1)
+      heading.position.set(0, -radius - 28)
+
       const value = new Text({
-        text: '--',
-        style: { fill: 0xf8fafc, fontSize: 26, fontWeight: '700' },
+        text: '0',
+        style: { fill: 0xf8fafc, fontSize: 36, fontWeight: '700' },
       })
       value.anchor.set(0.5)
 
+      const units = new Text({
+        text: desc.units,
+        style: { fill: 0x9aa4b2, fontSize: 20, fontWeight: '600' }
+      })
+      units.anchor.set(0.5, 0)
+      units.position.set(0, 28)
+
       const title = new Text({
-        text: desc.title,
-        style: { fill: 0xe2e8f0, fontSize: 15, fontWeight: '600' },
+        text: desc.label,
+        style: { fill: 0xe2e8f0, fontSize: 18, fontWeight: '600' },
       })
       title.anchor.set(0.5, 0)
-      title.position.set(0, radius + 18)
+      title.position.set(0, radius + 32)
 
-      container.addChild(face, ring, notch, value, title)
+      container.addChild(heading, face, ring, notch, value, units, title)
       dashboardLayer.addChild(container)
-      dashboardVisuals.push({ container, title, value })
+      dashboardVisuals.push({ container, heading, title, value, units })
     }
 
     updateDashboardLayout()
@@ -339,8 +356,8 @@ export function buildScene(root: Container, layout: Layout) {
     dashboardLayer.visible = true
     const centerX = positionsList.reduce((acc, pos) => acc + pos.x, 0) / positionsList.length
     const minY = positionsList.reduce((acc, pos) => Math.min(acc, pos.y), Infinity)
-    const baseY = minY - 140
-    const spacing = 180
+    const baseY = minY - 180
+    const spacing = 260
     const startX = centerX - ((dashboardVisuals.length - 1) * spacing) / 2
 
     dashboardVisuals.forEach((visual, idx) => {
@@ -761,6 +778,8 @@ export function buildScene(root: Container, layout: Layout) {
 
   let packetDelta = 0
   let packetsAllowed = false
+  let throughputTotalGbps = 0
+  let queueTotalKb = 0
 
   const updatePacketGroup = (
     packets: PacketVisual[],
@@ -1084,6 +1103,9 @@ export function buildScene(root: Container, layout: Layout) {
         label.visible = false
       }
     }
+    updateThroughputTotal(snapshot)
+    updateQueueTotal(snapshot)
+    updateDashboardValues()
     // no packet movement
   }
 
@@ -1091,6 +1113,54 @@ export function buildScene(root: Container, layout: Layout) {
     hideAllPackets()
     packetsLayer.visible = false
     packetDelta = 0
+    throughputTotalGbps = 0
+    queueTotalKb = 0
+  }
+
+  function updateThroughputTotal(snapshot: Snapshot) {
+    if (!SHOW_SPINE_DASHBOARD) return
+    let sum = 0
+    for (const link of layout.links) {
+      const snap = snapshot.links[link.id]
+      if (!snap) continue
+      const fromKind = link.metrics?.fromKind
+      const toKind = link.metrics?.toKind
+      if (fromKind === 'tor' && toKind === 'host') {
+        sum += Math.max(0, snap.aToB ?? 0)
+      } else if (fromKind === 'host' && toKind === 'tor') {
+        sum += Math.max(0, snap.bToA ?? 0)
+      }
+    }
+    throughputTotalGbps = sum
+  }
+
+  function updateQueueTotal(snapshot: Snapshot) {
+    if (!SHOW_SPINE_DASHBOARD) return
+    let total = 0
+    for (const link of layout.links) {
+      const snap = snapshot.links[link.id]
+      if (!snap) continue
+      const aNode = layout.nodes.find((n) => n.id === link.a)
+      const bNode = layout.nodes.find((n) => n.id === link.b)
+      if (!aNode || !bNode) continue
+      if (aNode.type === 'switch') total += Math.max(0, snap.queueA ?? 0)
+      if (bNode.type === 'switch') total += Math.max(0, snap.queueB ?? 0)
+    }
+    queueTotalKb = total
+  }
+
+  function updateDashboardValues() {
+    if (!SHOW_SPINE_DASHBOARD || dashboardVisuals.length === 0) return
+    const throughputVisual = dashboardVisuals[0]
+    if (throughputVisual) {
+      const clamped = Math.max(0, Math.min(3200, throughputTotalGbps))
+      throughputVisual.value.text = `${clamped.toFixed(0)}`
+    }
+    const queueVisual = dashboardVisuals[1]
+    if (queueVisual) {
+      const clampedQueue = Math.max(0, Math.min(QUEUE_MAX_KB, queueTotalKb))
+      queueVisual.value.text = `${clampedQueue.toFixed(0)}`
+    }
   }
 
   let autoFitApplied = false
