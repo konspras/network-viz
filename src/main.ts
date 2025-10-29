@@ -108,9 +108,12 @@ window.addEventListener('DOMContentLoaded', async () => {
     if (speedUpBtn) speedUpBtn.disabled = disabled
   }
 
+  let currentDuration = 0
+
   const updateTimeLabel = (t: number) => {
     const micros = t * 1_000_000
-    timeLabel.textContent = `t = ${micros.toFixed(1)} µs (${t.toFixed(6)} s)`
+    const completion = currentDuration > 0 ? Math.min(100, Math.max(0, (t / currentDuration) * 100)) : 0
+    timeLabel.textContent = `t = ${micros.toFixed(1)} µs (${completion.toFixed(1)}%)`
   }
 
   let controller: VizController | null = null
@@ -163,6 +166,7 @@ window.addEventListener('DOMContentLoaded', async () => {
     setLoading(true)
     try {
       const data = await loadScenarioData(selection)
+      currentDuration = data.duration ?? 0
       if (token !== loadRequestId) return
       if (!controller || initial) {
         controller = await initNetworkViz(container, {

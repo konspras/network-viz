@@ -70,6 +70,15 @@ function createZeroSeries(length: number): DirectionSeries {
   }
 }
 
+function zeroBaseTimestamps(ts: Float64Array) {
+  if (!ts.length) return
+  const offset = ts[0]
+  if (!Number.isFinite(offset) || offset === 0) return
+  for (let i = 0; i < ts.length; i++) {
+    ts[i] -= offset
+  }
+}
+
 class CsvDataSource implements TimeSeriesDataSource {
   readonly layout: Layout
   readonly events = []
@@ -222,6 +231,7 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
         throw new Error(`CSV ${url} did not provide timestamps`)
       }
       timestamps = parsed.timestamps
+      zeroBaseTimestamps(timestamps)
     } else if (parsed.throughput.length !== timestamps.length) {
       console.warn(`CSV ${url} has mismatched length; truncating to baseline`)
       if (parsed.throughput.length > timestamps.length) {

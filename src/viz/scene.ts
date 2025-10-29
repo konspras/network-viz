@@ -842,7 +842,7 @@ export function buildScene(root: Container, layout: Layout) {
     const forwardPackets: PacketVisual[] = []
     const reversePackets: PacketVisual[] = []
     for (let i = 0; i < PACKETS_PER_DIRECTION; i++) {
-      const base = i / PACKETS_PER_DIRECTION
+      const base = i / (0.3 * PACKETS_PER_DIRECTION)
       forwardPackets.push(createPacketVisual(base))
       reversePackets.push(createPacketVisual(base))
     }
