@@ -79,13 +79,13 @@ function zeroBaseTimestamps(ts: Float64Array) {
   }
 }
 
-function parseBudgetCsv(
+function parseScalarCsv(
   text: string,
   reuseTimestamps?: Float64Array,
 ): { timestamps?: Float64Array; values: Float32Array } {
   const lines = text.split(/\r?\n/).filter((line) => line.trim().length > 0)
   if (lines.length <= 1) {
-    throw new Error('Budget CSV missing data rows')
+    throw new Error('Scalar CSV missing data rows')
   }
   const count = lines.length - 1
   const values = new Float32Array(count)
@@ -112,6 +112,7 @@ class CsvDataSource implements TimeSeriesDataSource {
   private readonly timestamps: Float64Array
   private readonly linkSeries: Map<string, LinkSeries>
   private readonly hostBudgetSeries: Map<number, Float32Array>
+  private readonly hostQueueSeries: Map<number, Float32Array>
   private lastIndex = 0
   private lastTime = 0
 
@@ -120,11 +121,13 @@ class CsvDataSource implements TimeSeriesDataSource {
     timestamps: Float64Array,
     series: Map<string, LinkSeries>,
     hostBudgets: Map<number, Float32Array>,
+    hostQueues: Map<number, Float32Array>,
   ) {
     this.layout = layout
     this.timestamps = timestamps
     this.linkSeries = series
     this.hostBudgetSeries = hostBudgets
+    this.hostQueueSeries = hostQueues
     let duration = 0
     if (timestamps.length) {
       duration = timestamps[timestamps.length - 1]
@@ -212,19 +215,26 @@ class CsvDataSource implements TimeSeriesDataSource {
       nodeQueueCount[link.b] += 1
     }
 
-    const nodes: Record<string, { queue: number }> = {}
+    const nodes: Record<string, { queue: number; bucket?: number }> = {}
     for (const node of this.layout.nodes) {
       const count = nodeQueueCount[node.id]
       const avg = count > 0 ? nodeQueueSum[node.id] / count : 0
       let bucketValue: number | undefined
+      let hostQueueValue: number | undefined
       if (node.type === 'host') {
         const budgetSeries = this.hostBudgetSeries.get(node.metricsId)
         if (budgetSeries) {
           const interpolated = this.interpolate(budgetSeries, idx, nextIdx, frac)
           bucketValue = Math.max(0, interpolated)
         }
+        const queueSeries = this.hostQueueSeries.get(node.metricsId)
+        if (queueSeries) {
+          const interpolatedQueue = this.interpolate(queueSeries, idx, nextIdx, frac)
+          hostQueueValue = Math.max(0, interpolatedQueue)
+        }
       }
-      nodes[node.id] = { queue: Math.max(0, avg), bucket: bucketValue }
+      const queueValue = node.type === 'host' ? Math.max(0, hostQueueValue ?? avg) : Math.max(0, avg)
+      nodes[node.id] = { queue: queueValue, bucket: bucketValue }
     }
 
     return { t: clamped, links, nodes }
@@ -235,6 +245,7 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
   const layout = makeLeafSpineLayout()
   const series = new Map<string, LinkSeries>()
   const hostBudgetSeries = new Map<number, Float32Array>()
+  const hostQueueSeries = new Map<number, Float32Array>()
   let timestamps: Float64Array | undefined
 
   const basePath = joinUrlSegments(
@@ -316,6 +327,45 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
   }
   const baselineTimestamps = timestamps
 
+  const hostNodes = layout.nodes.filter((node) => node.type === 'host')
+  const loadHostScalarSeries = async (
+    basePath: string,
+    fileStem: string,
+    target: Map<number, Float32Array>,
+  ) => {
+    await Promise.all(
+      hostNodes.map(async (node) => {
+        const hostPath = joinUrlSegments(basePath, `host_${node.metricsId}`)
+        const url = `${hostPath}/${fileStem}.csv`
+        try {
+          const response = await fetch(url)
+          if (!response.ok) {
+            if (response.status !== 404) {
+              console.warn(`Unable to fetch host ${fileStem} CSV (${response.status}): ${url}`)
+            }
+            return
+          }
+          const text = await response.text()
+          const parsed = parseScalarCsv(text, baselineTimestamps)
+          let values = parsed.values
+          if (values.length !== baselineTimestamps.length) {
+            console.warn(`Host ${fileStem} CSV length mismatch, adjusting to baseline: ${url}`)
+            if (values.length > baselineTimestamps.length) {
+              values = values.subarray(0, baselineTimestamps.length)
+            } else {
+              const padded = new Float32Array(baselineTimestamps.length)
+              padded.set(values)
+              values = padded
+            }
+          }
+          target.set(node.metricsId, values)
+        } catch (err) {
+          console.warn(`Error loading host ${fileStem} CSV ${url}`, err)
+        }
+      }),
+    )
+  }
+
   const budgetBasePath = joinUrlSegments(
     'data',
     selection.scenario,
@@ -327,39 +377,20 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
     'budget_bytes',
     `load_${selection.load}`,
   )
+  await loadHostScalarSeries(budgetBasePath, 'budget_bytes', hostBudgetSeries)
 
-  const hostNodes = layout.nodes.filter((node) => node.type === 'host')
-  await Promise.all(
-    hostNodes.map(async (node) => {
-      const hostPath = joinUrlSegments(budgetBasePath, `host_${node.metricsId}`)
-      const url = `${hostPath}/budget_bytes.csv`
-      try {
-        const response = await fetch(url)
-        if (!response.ok) {
-          if (response.status !== 404) {
-            console.warn(`Unable to fetch host budget CSV (${response.status}): ${url}`)
-          }
-          return
-        }
-        const text = await response.text()
-        const parsed = parseBudgetCsv(text, baselineTimestamps)
-        let values = parsed.values
-        if (values.length !== baselineTimestamps.length) {
-          console.warn(`Host budget CSV length mismatch, adjusting to baseline: ${url}`)
-          if (values.length > baselineTimestamps.length) {
-            values = values.subarray(0, baselineTimestamps.length)
-          } else {
-            const padded = new Float32Array(baselineTimestamps.length)
-            padded.set(values)
-            values = padded
-          }
-        }
-        hostBudgetSeries.set(node.metricsId, values)
-      } catch (err) {
-        console.warn(`Error loading host budget CSV ${url}`, err)
-      }
-    }),
+  const creditBasePath = joinUrlSegments(
+    'data',
+    selection.scenario,
+    'data',
+    selection.protocol,
+    selection.load,
+    'output',
+    'cc',
+    'credit_backlog',
+    `load_${selection.load}`,
   )
+  await loadHostScalarSeries(creditBasePath, 'credit_backlog', hostQueueSeries)
 
   console.log('[viz] Loaded scenario data', {
     scenario: selection.scenario,
@@ -368,5 +399,5 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
     links: series.size,
   })
 
-  return new CsvDataSource(layout, baselineTimestamps, series, hostBudgetSeries)
+  return new CsvDataSource(layout, baselineTimestamps, series, hostBudgetSeries, hostQueueSeries)
 }

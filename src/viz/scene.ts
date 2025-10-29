@@ -22,7 +22,7 @@ export function buildScene(root: Container, layout: Layout) {
   const DRAW_NODES = true // Toggle node rendering (disabled while debugging GPU allocations)
   const SHOW_QUEUE_LABELS = true // Toggle queue labels (disabled while hunting GPU leak)
   const SHOW_HOST_BUCKETS = true // Toggle host bucket graphics (disabled during GPU leak hunt)
-  const SHOW_HOST_QUEUES = false // Toggle host queue bars beneath endpoints
+  const SHOW_HOST_QUEUES = true // Toggle host queue bars beneath endpoints
   const SHOW_TOR_SPINE_QUEUES = true // Toggle ToR->spine queue bars (disabled during GPU leak hunt)
   const SHOW_PACKET_FLOW = true // Toggle animated packet flow along links
   const SHOW_SPINE_DASHBOARD = true // Toggle dashboard gauges above spines
@@ -34,6 +34,7 @@ export function buildScene(root: Container, layout: Layout) {
   const PACKET_STEP = 0.02 // Constant progress increment per frame
   const QUEUE_MAX_KB = 5000
   const HOST_BUCKET_MAX_BYTES = 200000
+  const HOST_QUEUE_MAX_BYTES = 120000
   // screen-space grid layer (infinite grid) + world container
   const gridLayer = new Graphics()
   root.addChild(gridLayer)
@@ -114,6 +115,7 @@ export function buildScene(root: Container, layout: Layout) {
     valueSource: QueueValueSource
     maxValue: number
     label?: QueueLabelDescriptor
+    tintOverride?: number
   }
 
   type BucketVisual = {
@@ -423,7 +425,8 @@ export function buildScene(root: Container, layout: Layout) {
         height: barH,
         anchor: 'bottom',
         valueSource: { kind: 'node', nodeId: node.id },
-        maxValue: maxQueueKb,
+        maxValue: HOST_QUEUE_MAX_BYTES,
+        tintOverride: 0xef4444,
       })
     }
 
@@ -792,7 +795,7 @@ export function buildScene(root: Container, layout: Layout) {
     const norm = clamp01(visual.maxValue > 0 ? value / visual.maxValue : 0)
     visual.fill.scale.x = visual.width
     visual.fill.scale.y = visual.height * norm
-    visual.fill.tint = colorForQueueUsage(norm)
+    visual.fill.tint = visual.tintOverride ?? colorForQueueUsage(norm)
     visual.fill.visible = norm > 0
     if (SHOW_QUEUE_LABELS && visual.label) {
       const displayValue = Math.max(0, value)
