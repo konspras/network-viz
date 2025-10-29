@@ -21,9 +21,9 @@ export function buildScene(root: Container, layout: Layout) {
   const DRAW_LINK_FILL = true // Toggle link fill (disabled while debugging GPU allocations)
   const DRAW_NODES = true // Toggle node rendering (disabled while debugging GPU allocations)
   const SHOW_QUEUE_LABELS = true // Toggle queue labels (disabled while hunting GPU leak)
-  const SHOW_HOST_BUCKETS = true // Toggle host bucket graphics (disabled during GPU leak hunt)
+  const SHOW_HOST_BUCKETS = false // Toggle host bucket graphics (disabled during GPU leak hunt)
+  const SHOW_HOST_QUEUES = false // Toggle host queue bars beneath endpoints
   const SHOW_TOR_SPINE_QUEUES = true // Toggle ToR->spine queue bars (disabled during GPU leak hunt)
-  const DRAW_LINK_ARROWHEADS = true // Toggle link arrowheads (disabled during GPU leak hunt)  -> by itself, no ram explosion
   // screen-space grid layer (infinite grid) + world container
   const gridLayer = new Graphics()
   root.addChild(gridLayer)
@@ -53,17 +53,17 @@ export function buildScene(root: Container, layout: Layout) {
   const hostLabelLayer = new Container()
   labelsLayer.addChild(hostLabelLayer)
   const hostLabels = new Map<string, Text>()
-  const maxQueueKb = 1000
+  const maxQueueKb = 700
   const nodeColors = {
-    host: 0x1f2937,
-    tor: 0x4b5563,
-    spine: 0x6b7280,
-    switch: 0x374151,
+    host: 0xe5e7eb,
+    tor: 0xe5e7eb,
+    spine: 0xe5e7eb,
+    switch: 0xe2e8f0,
   }
 
   const colorForLinkUsage = (u: number) => {
     const value = clamp01(u)
-    if (value <= 0.01) return 0xcbd5e1
+    if (value <= 0.01) return 0x767B84
     if (value < 0.6) return lerpColor(0x22c55e, 0xf97316, (value - 0.01) / 0.59)
     return lerpColor(0xf97316, 0xef4444, (value - 0.6) / 0.4)
   }
@@ -244,50 +244,52 @@ export function buildScene(root: Container, layout: Layout) {
     nodesLayer.addChild(body)
     disposables.push(body)
 
-    const barW = 14
-    const barH = 32
-    const top = pos.y + radius + 6
-    const bottom = top + barH
-    const barBg = new Graphics()
-    barBg.roundRect(pos.x - barW / 2, top, barW, barH, 3).fill({ color: 0x1e2430, alpha: 0.9 })
-    nodesLayer.addChild(barBg)
-    disposables.push(barBg)
+    if (SHOW_HOST_QUEUES) {
+      const barW = 14
+      const barH = 32
+      const top = pos.y + radius + 6
+      const bottom = top + barH
+      const barBg = new Graphics()
+      barBg.roundRect(pos.x - barW / 2, top, barW, barH, 3).fill({ color: 0x1e2430, alpha: 0.9 })
+      nodesLayer.addChild(barBg)
+      disposables.push(barBg)
 
-    if (SHOW_HOST_BUCKETS && node.type === 'host') {
-      const bucketSpacing = 6
-      const bucketWidth = barW + 4
-      const bucketLeft = pos.x - bucketWidth / 2
-      const bucketTop = bottom + bucketSpacing
-      const bucketHeight = barH
-      const bucketRadius = 4
-      const bucketStroke = { color: 0xcbd5f5, width: 2, alpha: 0.85 } as const
-      const bucket = new Graphics()
-      bucket.roundRect(bucketLeft, bucketTop, bucketWidth, bucketHeight, bucketRadius).stroke(bucketStroke)
-      const handleWidth = Math.max(6, bucketWidth * 0.6)
-      const handleLeft = bucketLeft + (bucketWidth - handleWidth) / 2
-      const handleRight = handleLeft + handleWidth
-      const handleTop = bucketTop - 6
-      bucket.moveTo(handleLeft, bucketTop)
-      bucket.quadraticCurveTo(bucketLeft + bucketWidth / 2, handleTop, handleRight, bucketTop)
-      bucket.stroke(bucketStroke)
-      nodesLayer.addChild(bucket)
-      disposables.push(bucket)
+      if (SHOW_HOST_BUCKETS && node.type === 'host') {
+        const bucketSpacing = 6
+        const bucketWidth = barW + 4
+        const bucketLeft = pos.x - bucketWidth / 2
+        const bucketTop = bottom + bucketSpacing
+        const bucketHeight = barH
+        const bucketRadius = 4
+        const bucketStroke = { color: 0xcbd5f5, width: 2, alpha: 0.85 } as const
+        const bucket = new Graphics()
+        bucket.roundRect(bucketLeft, bucketTop, bucketWidth, bucketHeight, bucketRadius).stroke(bucketStroke)
+        const handleWidth = Math.max(6, bucketWidth * 0.6)
+        const handleLeft = bucketLeft + (bucketWidth - handleWidth) / 2
+        const handleRight = handleLeft + handleWidth
+        const handleTop = bucketTop - 6
+        bucket.moveTo(handleLeft, bucketTop)
+        bucket.quadraticCurveTo(bucketLeft + bucketWidth / 2, handleTop, handleRight, bucketTop)
+        bucket.stroke(bucketStroke)
+        nodesLayer.addChild(bucket)
+        disposables.push(bucket)
+      }
+
+      const fill = createQueueFillGraphic('bottom')
+      fill.position.set(pos.x, bottom)
+      fill.scale.x = barW
+      fill.scale.y = 0
+      nodesLayer.addChild(fill)
+      disposables.push(fill)
+      queueVisuals.push({
+        fill,
+        width: barW,
+        height: barH,
+        anchor: 'bottom',
+        valueSource: { kind: 'node', nodeId: node.id },
+        maxValue: maxQueueKb,
+      })
     }
-
-    const fill = createQueueFillGraphic('bottom')
-    fill.position.set(pos.x, bottom)
-    fill.scale.x = barW
-    fill.scale.y = 0
-    nodesLayer.addChild(fill)
-    disposables.push(fill)
-    queueVisuals.push({
-      fill,
-      width: barW,
-      height: barH,
-      anchor: 'bottom',
-      valueSource: { kind: 'node', nodeId: node.id },
-      maxValue: maxQueueKb,
-    })
 
     const hostLabel = hostLabels.get(node.id)
     if (hostLabel) {
@@ -614,7 +616,8 @@ export function buildScene(root: Container, layout: Layout) {
     visual.fill.tint = colorForQueueUsage(norm)
     visual.fill.visible = norm > 0
     if (SHOW_QUEUE_LABELS && visual.label) {
-      useQueueLabel(visual.label.key, visual.label.position.x, visual.label.position.y, Math.min(value, visual.maxValue), visual.label.anchorY)
+      const displayValue = Math.max(0, value)
+      useQueueLabel(visual.label.key, visual.label.position.x, visual.label.position.y, displayValue, visual.label.anchorY)
     }
   }
 
@@ -648,23 +651,10 @@ export function buildScene(root: Container, layout: Layout) {
   }
   // Screen-filling grid that scrolls with pan/zoom (tile pattern)
   function drawGridScreen() {
-    const gapWorld = 40
-    const gapScreen = gapWorld * scale
     const w = size.width
     const h = size.height
     gridLayer.clear()
-    gridLayer.rect(0, 0, w, h).fill({ color: 0xffffff })
-    if (gapScreen < 4) return // too dense; skip lines
-    const offsetX = ((world.position.x % gapScreen) + gapScreen) % gapScreen
-    const offsetY = ((world.position.y % gapScreen) + gapScreen) % gapScreen
-    gridLayer.stroke({ color: 0x1a0000, width: 0.5, alpha: 0.08 })
-    for (let x = offsetX; x <= w; x += gapScreen) {
-      gridLayer.moveTo(x, 0).lineTo(x, h)
-    }
-    for (let y = offsetY; y <= h; y += gapScreen) {
-      gridLayer.moveTo(0, y).lineTo(w, y)
-    }
-    gridLayer.stroke()
+    gridLayer.rect(0, 0, w, h).fill({ color: 0x08090c })
   }
   function useQueueLabel(key: string, x: number, y: number, value: number, anchorY = 1) {
     if (!SHOW_QUEUE_LABELS) return
@@ -796,9 +786,6 @@ export function buildScene(root: Container, layout: Layout) {
     updateLinkGraphic(visuals.forward, forwardStart, forwardEnd, widthAB, colorAB, dashedForward)
     updateLinkGraphic(visuals.reverse, reverseStart, reverseEnd, widthBA, colorBA, dashedReverse)
 
-    if (DRAW_LINK_ARROWHEADS) {
-      // Arrowheads disabled in transform-based link rendering path
-    }
   }
 
   const buildDashedGeometry = (graphic: Graphics, length: number, dash = DASH_LENGTH, gap = DASH_GAP) => {
