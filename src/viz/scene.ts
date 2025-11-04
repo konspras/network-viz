@@ -1,5 +1,6 @@
 import { Container, Graphics, Text, Rectangle } from 'pixi.js'
 import type { Layout, Snapshot, NodeDef, LinkDef, LinkSnapshot } from './types'
+import { normalizeDisplayOptions, type DisplayOptions } from './displayOptions.ts'
 
 // When DRAW_LINK_FILL is true, every call to drawStroke ends with:
 
@@ -16,25 +17,20 @@ import type { Layout, Snapshot, NodeDef, LinkDef, LinkSnapshot } from './types'
 
 // Next step https://chatgpt.com/c/68fbb02d-15f8-832a-ae1c-9bdb8429bc40 
 
-export function buildScene(root: Container, layout: Layout) {
+export function buildScene(root: Container, layout: Layout, initialDisplayOptions?: Partial<DisplayOptions>) {
   const DRAW_LINKS = true // Toggle link rendering (disabled while debugging GPU allocations)
   const DRAW_LINK_FILL = true // Toggle link fill (disabled while debugging GPU allocations)
   const DRAW_NODES = true // Toggle node rendering (disabled while debugging GPU allocations)
-  const SHOW_QUEUE_LABELS = true // Toggle queue labels (disabled while hunting GPU leak)
-  const SHOW_HOST_BUCKETS = true // Toggle host bucket graphics (disabled during GPU leak hunt)
-  const SHOW_HOST_QUEUES = true // Toggle host queue bars beneath endpoints
-  const SHOW_TOR_SPINE_QUEUES = true // Toggle ToR->spine queue bars (disabled during GPU leak hunt)
-  const SHOW_PACKET_FLOW = true // Toggle animated packet flow along links
-  const SHOW_SPINE_DASHBOARD = true // Toggle dashboard gauges above spines
+  let displayOptions = normalizeDisplayOptions(initialDisplayOptions)
   const PACKETS_PER_DIRECTION = 25
   // const PACKET_MIN_SCALE = 100 // Zoom threshold for packets (increase to require deeper zoom)
   const PACKET_MIN_SCALE = 0.5 // Zoom threshold for packets (increase to require deeper zoom)
   // const PACKET_MIN_SCALE = 3.5 // Zoom threshold for packets (increase to require deeper zoom)
   const PACKET_SPEED = 0.6 // Constant per-frame speed multiplier
   const PACKET_STEP = 0.02 // Constant progress increment per frame
-  const QUEUE_MAX_KB = 5000
-  const HOST_BUCKET_MAX_BYTES = 200000
-  const HOST_QUEUE_MAX_BYTES = 120000
+  const QUEUE_MAX_KB = 15000
+  const HOST_BUCKET_MAX_BYTES = 700000
+  const HOST_QUEUE_MAX_BYTES = 350000
   // screen-space grid layer (infinite grid) + world container
   const gridLayer = new Graphics()
   root.addChild(gridLayer)
@@ -68,7 +64,7 @@ export function buildScene(root: Container, layout: Layout) {
   const dashboardLayer = new Container()
   labelsLayer.addChild(dashboardLayer)
   const dashboardVisuals: DashboardVisual[] = []
-  const maxQueueKb = 700
+  const maxQueueKb = 300
   const nodeColors = {
     host: 0xfce2c4,
     tor: 0xe5e7eb,
@@ -297,7 +293,7 @@ export function buildScene(root: Container, layout: Layout) {
   function rebuildDashboard() {
     dashboardLayer.removeChildren()
     dashboardVisuals.length = 0
-    if (!SHOW_SPINE_DASHBOARD) {
+    if (!displayOptions.spineDashboard) {
       dashboardLayer.visible = false
       return
     }
@@ -354,7 +350,7 @@ export function buildScene(root: Container, layout: Layout) {
   }
 
   function updateDashboardLayout() {
-    if (!SHOW_SPINE_DASHBOARD || dashboardVisuals.length === 0) return
+    if (!displayOptions.spineDashboard || dashboardVisuals.length === 0) return
     const spines = layout.nodes.filter((node) => node.id.startsWith('sp'))
     const positionsList = spines
       .map((node) => positions.get(node.id))
@@ -385,7 +381,7 @@ export function buildScene(root: Container, layout: Layout) {
   }
 
   function createEndpointNodeVisual(node: NodeDef): NodeVisual {
-    const disposables: Graphics[] = []
+    const disposables: (Graphics | Container)[] = []
     const queueVisuals: QueueVisual[] = []
     const bucketVisuals: BucketVisual[] = []
     const pos = positions.get(node.id)!
@@ -403,7 +399,7 @@ export function buildScene(root: Container, layout: Layout) {
     const queueTop = pos.y + radius + 6
     const queueBottom = queueTop + barH
 
-    if (SHOW_HOST_QUEUES) {
+    if (displayOptions.hostQueues) {
       const barBg = new Graphics()
       barBg
         .roundRect(pos.x - barW / 2, queueTop, barW, barH, 3)
@@ -430,11 +426,11 @@ export function buildScene(root: Container, layout: Layout) {
       })
     }
 
-    if (SHOW_HOST_BUCKETS && node.type === 'host') {
+    if (displayOptions.hostBuckets && node.type === 'host') {
       const bucketSpacing = 6
       const bucketWidth = barW + 4
       const bucketLeft = pos.x - bucketWidth / 2
-      const anchorBottom = SHOW_HOST_QUEUES ? queueBottom : queueTop
+      const anchorBottom = displayOptions.hostQueues ? queueBottom : queueTop
       const bucketTop = anchorBottom + bucketSpacing
       const bucketHeight = barH
       const bucketBottom = bucketTop + bucketHeight
@@ -496,7 +492,7 @@ export function buildScene(root: Container, layout: Layout) {
   }
 
   function createTorNodeVisual(node: NodeDef): NodeVisual {
-    const disposables: Graphics[] = []
+    const disposables: (Graphics | Container)[] = []
     const queueVisuals: QueueVisual[] = []
     const pos = positions.get(node.id)!
     const fillColor = nodeFillColor(node)
@@ -610,7 +606,7 @@ export function buildScene(root: Container, layout: Layout) {
         drawArrow(centerX, direction === 'up' ? rowTop : rowTop + rowHeightLocal, direction, barWidth)
       }
 
-      if (SHOW_TOR_SPINE_QUEUES && spineLinks.length) {
+      if (displayOptions.torSpineQueues && spineLinks.length) {
         const torWidth = right - left
         const count = spineLinks.length
         const barWidthTop = Math.min(26, Math.max(12, torWidth * 0.18 / Math.max(1, count)))
@@ -674,7 +670,7 @@ export function buildScene(root: Container, layout: Layout) {
   }
 
   function createSpineNodeVisual(node: NodeDef): NodeVisual {
-    const disposables: Graphics[] = []
+    const disposables: (Graphics | Container)[] = []
     const queueVisuals: QueueVisual[] = []
     const pos = positions.get(node.id)!
     const fillColor = nodeFillColor(node)
@@ -797,7 +793,7 @@ export function buildScene(root: Container, layout: Layout) {
     visual.fill.scale.y = visual.height * norm
     visual.fill.tint = visual.tintOverride ?? colorForQueueUsage(norm)
     visual.fill.visible = norm > 0
-    if (SHOW_QUEUE_LABELS && visual.label) {
+    if (displayOptions.queueLabels && visual.label) {
       const displayValue = Math.max(0, value)
       useQueueLabel(visual.label.key, visual.label.position.x, visual.label.position.y, displayValue, visual.label.anchorY)
     }
@@ -834,6 +830,7 @@ export function buildScene(root: Container, layout: Layout) {
   let packetsAllowed = false
   let throughputTotalGbps = 0
   let queueTotalKb = 0
+  let lastSnapshot: Snapshot | null = null
 
   const updatePacketGroup = (
     packets: PacketVisual[],
@@ -929,7 +926,7 @@ export function buildScene(root: Container, layout: Layout) {
     gridLayer.rect(0, 0, w, h).fill({ color: 0x08090c })
   }
   function useQueueLabel(key: string, x: number, y: number, value: number, anchorY = 1) {
-    if (!SHOW_QUEUE_LABELS) return
+    if (!displayOptions.queueLabels) return
     let label = queueLabels.get(key)
     if (!label) {
       label = new Text({
@@ -1129,13 +1126,14 @@ export function buildScene(root: Container, layout: Layout) {
   // Packets removed
 
   function update(snapshot: Snapshot) {
+    lastSnapshot = snapshot
     queueLabelsUsed.clear()
     for (const label of hostLabels.values()) label.visible = false
-    packetDelta = SHOW_PACKET_FLOW ? PACKET_STEP : 0
-    packetsAllowed = SHOW_PACKET_FLOW && scale >= PACKET_MIN_SCALE
+    packetDelta = displayOptions.packetFlow ? PACKET_STEP : 0
+    packetsAllowed = displayOptions.packetFlow && scale >= PACKET_MIN_SCALE
     linksLayer.visible = !(DRAW_LINKS && packetsAllowed)
-    packetsLayer.visible = packetsAllowed && SHOW_PACKET_FLOW
-    if (packetsAllowed && SHOW_PACKET_FLOW) {
+    packetsLayer.visible = packetsAllowed && displayOptions.packetFlow
+    if (packetsAllowed && displayOptions.packetFlow) {
       for (const l of layout.links) {
         drawLink(l.id, snapshot.links[l.id])
       }
@@ -1169,10 +1167,11 @@ export function buildScene(root: Container, layout: Layout) {
     packetDelta = 0
     throughputTotalGbps = 0
     queueTotalKb = 0
+    lastSnapshot = null
   }
 
   function updateThroughputTotal(snapshot: Snapshot) {
-    if (!SHOW_SPINE_DASHBOARD) return
+    if (!displayOptions.spineDashboard) return
     let sum = 0
     for (const link of layout.links) {
       const snap = snapshot.links[link.id]
@@ -1189,7 +1188,7 @@ export function buildScene(root: Container, layout: Layout) {
   }
 
   function updateQueueTotal(snapshot: Snapshot) {
-    if (!SHOW_SPINE_DASHBOARD) return
+    if (!displayOptions.spineDashboard) return
     let total = 0
     for (const link of layout.links) {
       const snap = snapshot.links[link.id]
@@ -1204,7 +1203,7 @@ export function buildScene(root: Container, layout: Layout) {
   }
 
   function updateDashboardValues() {
-    if (!SHOW_SPINE_DASHBOARD || dashboardVisuals.length === 0) return
+    if (!displayOptions.spineDashboard || dashboardVisuals.length === 0) return
     const throughputVisual = dashboardVisuals[0]
     if (throughputVisual) {
       const clamped = Math.max(0, Math.min(3200, throughputTotalGbps))
@@ -1320,6 +1319,37 @@ export function buildScene(root: Container, layout: Layout) {
     }
   }
 
+  function setDisplayOptions(next: DisplayOptions) {
+    const prev = displayOptions
+    displayOptions = { ...next }
+    const needsNodeRebuild =
+      prev.hostBuckets !== displayOptions.hostBuckets ||
+      prev.hostQueues !== displayOptions.hostQueues ||
+      prev.torSpineQueues !== displayOptions.torSpineQueues
+    if (needsNodeRebuild) {
+      rebuildNodeVisuals()
+    }
+    if (prev.spineDashboard !== displayOptions.spineDashboard) {
+      rebuildDashboard()
+    }
+    if (!displayOptions.queueLabels) {
+      queueLabelsUsed.clear()
+      for (const label of queueLabels.values()) {
+        label.visible = false
+      }
+    }
+    packetDelta = displayOptions.packetFlow ? PACKET_STEP : 0
+    packetsAllowed = displayOptions.packetFlow && scale >= PACKET_MIN_SCALE
+    packetsLayer.visible = packetsAllowed && displayOptions.packetFlow
+    linksLayer.visible = !(DRAW_LINKS && packetsAllowed)
+    if (!displayOptions.packetFlow) {
+      hideAllPackets()
+    }
+    if (lastSnapshot) {
+      update(lastSnapshot)
+    }
+  }
+
   // Attach to root's parent stage interaction through root as container is not interactive by default
   root.eventMode = 'static'
   root.on('wheel', (e: any) => {
@@ -1357,7 +1387,7 @@ export function buildScene(root: Container, layout: Layout) {
   // Initial grid
   drawGridScreen()
 
-  return { update, reset, layoutResize }
+  return { update, reset, layoutResize, setDisplayOptions }
 }
 
 function isUplink(from: NodeDef, to: NodeDef) {

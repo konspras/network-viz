@@ -2,6 +2,12 @@ import './style.css'
 import { initNetworkViz, type VizController } from './viz/app.ts'
 import { loadScenarioData, type ScenarioSelection } from './viz/dataLoader.ts'
 import { scenarioNames, getProtocolsForScenario, getLoadsForScenario } from './scenarios.ts'
+import {
+  DISPLAY_OPTION_DEFS,
+  normalizeDisplayOptions,
+  type DisplayOptionId,
+  type DisplayOptions,
+} from './viz/displayOptions.ts'
 
 const scenarioPlaceholder = 'No scenarios found'
 const protocolPlaceholder = 'No protocols available'
@@ -44,6 +50,11 @@ window.addEventListener('DOMContentLoaded', async () => {
   const scenarioSelect = document.getElementById('scenarioSelect') as HTMLSelectElement
   const protocolSelect = document.getElementById('protocolSelect') as HTMLSelectElement
   const loadSelect = document.getElementById('loadSelect') as HTMLSelectElement
+  const displayOptionsContainer = document.getElementById('displayOptionsContainer') as HTMLDivElement | null
+
+  let displayOptions: DisplayOptions = normalizeDisplayOptions()
+  const displayOptionInputs = new Map<DisplayOptionId, HTMLInputElement>()
+  let controller: VizController | null = null
 
   let selectedScenario = setSelectOptions(scenarioSelect, scenarioNames, scenarioPlaceholder)
   let selectedProtocol = ''
@@ -61,6 +72,31 @@ window.addEventListener('DOMContentLoaded', async () => {
 
   refreshProtocolOptions()
   refreshLoadOptions()
+
+  if (displayOptionsContainer) {
+    displayOptionsContainer.innerHTML = ''
+    for (const option of DISPLAY_OPTION_DEFS) {
+      const row = document.createElement('label')
+      row.className = 'dropdown-option'
+      const input = document.createElement('input')
+      input.type = 'checkbox'
+      input.checked = displayOptions[option.id]
+      input.dataset.optionId = option.id
+      const label = document.createElement('span')
+      label.textContent = option.label
+      row.appendChild(input)
+      row.appendChild(label)
+      displayOptionsContainer.appendChild(row)
+      displayOptionInputs.set(option.id, input)
+      input.addEventListener('change', () => {
+        const delta = { [option.id]: input.checked } as Partial<DisplayOptions>
+        displayOptions = normalizeDisplayOptions({ ...displayOptions, ...delta })
+        if (controller) {
+          controller.setDisplayOptions(delta)
+        }
+      })
+    }
+  }
 
   const currentSelection = (): ScenarioSelection | null => {
     if (!selectedScenario || !selectedProtocol || !selectedLoad) return null
@@ -116,7 +152,6 @@ window.addEventListener('DOMContentLoaded', async () => {
     timeLabel.textContent = `t = ${micros.toFixed(1)} µs (${completion.toFixed(1)}%)`
   }
 
-  let controller: VizController | null = null
   let handlersBound = false
   let loadRequestId = 0
 
@@ -174,8 +209,10 @@ window.addEventListener('DOMContentLoaded', async () => {
           height: container.clientHeight,
           data,
           onTimeUpdate: updateTimeLabel,
+          displayOptions,
         })
         controller.resize(container.clientWidth, container.clientHeight)
+        controller.setDisplayOptions(displayOptions)
         bindControllerHandlers()
       } else {
         controller.pause()

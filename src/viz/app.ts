@@ -1,12 +1,14 @@
 import { Application, Container } from 'pixi.js'
 import { buildScene } from './scene.ts'
 import type { TimeSeriesDataSource } from './types.ts'
+import { normalizeDisplayOptions, type DisplayOptions } from './displayOptions.ts'
 
 export type VizOptions = {
   width: number
   height: number
   data: TimeSeriesDataSource
   onTimeUpdate?: (t: number) => void
+  displayOptions?: Partial<DisplayOptions>
 }
 
 export type VizController = {
@@ -17,6 +19,7 @@ export type VizController = {
   setSpeed: (s: number) => void
   resize: (w: number, h: number) => void
   setDataSource: (data: TimeSeriesDataSource) => void
+  setDisplayOptions: (options: Partial<DisplayOptions>) => void
 }
 
 export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise<VizController> {
@@ -36,11 +39,12 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
   }
 
   let data = opts.data
+  let displayOptions = normalizeDisplayOptions(opts.displayOptions)
 
   // Scene graph
   const world = new Container()
   app.stage.addChild(world)
-  const scene = buildScene(world, data.layout)
+  const scene = buildScene(world, data.layout, displayOptions)
 
   // Playback state
   let playing = false
@@ -99,6 +103,7 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
       simTime = 0
       data.reset()
       scene.reset()
+      scene.setDisplayOptions(displayOptions)
       scene.layoutResize(app.renderer.width, app.renderer.height)
       renderSnapshot(0)
       notifyTime(0)
@@ -121,9 +126,15 @@ export async function initNetworkViz(el: HTMLElement, opts: VizOptions): Promise
       duration = data.duration
       data.reset()
       scene.reset()
+      scene.setDisplayOptions(displayOptions)
       renderSnapshot(0)
       notifyTime(0)
       console.log('[viz] data source swapped', { duration })
+    },
+    setDisplayOptions: (overrides) => {
+      displayOptions = normalizeDisplayOptions({ ...displayOptions, ...overrides })
+      scene.setDisplayOptions(displayOptions)
+      renderSnapshot(simTime)
     },
   }
 }
