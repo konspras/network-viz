@@ -2,6 +2,9 @@
 
 Interactive 2D visualization of computer networks driven by time series data. Includes mock data, nodes, links, queues, and animated packets with simple playback controls.
 
+<img src="public/sample.png" alt="Network demo" width="720" />
+
+
 ## Quick start
 
 ```bash
