@@ -12,7 +12,9 @@ echo "Generating scenario manifest..."
 node scripts/generate-manifest.cjs
 
 echo "Building app..."
+export GITHUB_PAGES=true
 npm run build
+unset GITHUB_PAGES
 
 echo "Preparing GitHub Pages payload..."
 rm -rf docs
