@@ -31,7 +31,8 @@ function buildManifest(rootDir) {
 
 function main() {
   const repoRoot = path.resolve(__dirname, '..')
-  const dataDir = path.join(repoRoot, 'data')
+  const publicDir = path.join(repoRoot, 'data_public')
+  const dataDir = fs.existsSync(publicDir) ? publicDir : path.join(repoRoot, 'data')
   const outPath = path.join(repoRoot, 'src', 'scenarioManifest.json')
 
   const manifest = buildManifest(dataDir)

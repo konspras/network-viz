@@ -1,5 +1,11 @@
 import { makeLeafSpineLayout } from './topologies/leafSpine.ts'
 import type { Layout, LinkSnapshot, Snapshot, TimeSeriesDataSource } from './types.ts'
+import type { ScenarioSelection } from './scenarioTypes.ts'
+import {
+  getHostScalarCsvPath,
+  getLinkDirectionPaths,
+  HOST_SCALAR_SERIES,
+} from './dataPaths.ts'
 
 type DirectionSeries = {
   throughput: Float32Array
@@ -10,29 +16,6 @@ type LinkSeries = {
   link: Layout['links'][number]
   forward: DirectionSeries
   reverse: DirectionSeries
-}
-
-export type ScenarioSelection = {
-  scenario: string
-  protocol: string
-  load: string
-}
-
-function encodeSegment(segment: string) {
-  return encodeURIComponent(segment)
-}
-
-function joinUrlSegments(...segments: string[]) {
-  const parts: string[] = []
-  for (const segment of segments) {
-    if (!segment) continue
-    const split = segment.split('/')
-    for (const piece of split) {
-      if (!piece) continue
-      parts.push(encodeSegment(piece))
-    }
-  }
-  return parts.join('/')
 }
 
 function parseCsv(
@@ -248,25 +231,7 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
   const hostQueueSeries = new Map<number, Float32Array>()
   let timestamps: Float64Array | undefined
 
-  const basePath = joinUrlSegments(
-    'data',
-    selection.scenario,
-    'data',
-    selection.protocol,
-    selection.load,
-    'output',
-    'qts',
-  )
-
-  const ensureDirection = async (
-    startKind: string,
-    startId: number,
-    endKind: string,
-    endId: number,
-  ): Promise<DirectionSeries> => {
-    const dirPath = joinUrlSegments(basePath, startKind)
-    const fileName = `qts_${startKind}_${startId}_${endKind}_${endId}.csv`
-    const url = `${dirPath}/${fileName}`
+  const loadDirectionSeries = async (url: string): Promise<DirectionSeries> => {
     const response = await fetch(url)
     if (!response.ok) {
       if (!timestamps) {
@@ -306,19 +271,11 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
   }
 
   for (const link of layout.links) {
-    const forwardPromise = ensureDirection(
-      link.metrics.fromKind,
-      link.metrics.fromId,
-      link.metrics.toKind,
-      link.metrics.toId,
-    )
-    const reversePromise = ensureDirection(
-      link.metrics.toKind,
-      link.metrics.toId,
-      link.metrics.fromKind,
-      link.metrics.fromId,
-    )
-    const [forward, reverse] = await Promise.all([forwardPromise, reversePromise])
+    const { forward: forwardPath, reverse: reversePath } = getLinkDirectionPaths(selection, link)
+    const [forward, reverse] = await Promise.all([
+      loadDirectionSeries(forwardPath),
+      loadDirectionSeries(reversePath),
+    ])
     series.set(link.id, { link, forward, reverse })
   }
 
@@ -329,19 +286,18 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
 
   const hostNodes = layout.nodes.filter((node) => node.type === 'host')
   const loadHostScalarSeries = async (
-    basePath: string,
-    fileStem: string,
+    seriesKey: (typeof HOST_SCALAR_SERIES)[number]['key'],
     target: Map<number, Float32Array>,
   ) => {
     await Promise.all(
       hostNodes.map(async (node) => {
-        const hostPath = joinUrlSegments(basePath, `host_${node.metricsId}`)
-        const url = `${hostPath}/${fileStem}.csv`
+        const url = getHostScalarCsvPath(selection, node, seriesKey)
+        if (!url) return
         try {
           const response = await fetch(url)
           if (!response.ok) {
             if (response.status !== 404) {
-              console.warn(`Unable to fetch host ${fileStem} CSV (${response.status}): ${url}`)
+              console.warn(`Unable to fetch host ${seriesKey} CSV (${response.status}): ${url}`)
             }
             return
           }
@@ -349,7 +305,7 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
           const parsed = parseScalarCsv(text, baselineTimestamps)
           let values = parsed.values
           if (values.length !== baselineTimestamps.length) {
-            console.warn(`Host ${fileStem} CSV length mismatch, adjusting to baseline: ${url}`)
+            console.warn(`Host ${seriesKey} CSV length mismatch, adjusting to baseline: ${url}`)
             if (values.length > baselineTimestamps.length) {
               values = values.subarray(0, baselineTimestamps.length)
             } else {
@@ -360,37 +316,14 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
           }
           target.set(node.metricsId, values)
         } catch (err) {
-          console.warn(`Error loading host ${fileStem} CSV ${url}`, err)
+          console.warn(`Error loading host ${seriesKey} CSV ${url}`, err)
         }
       }),
     )
   }
 
-  const budgetBasePath = joinUrlSegments(
-    'data',
-    selection.scenario,
-    'data',
-    selection.protocol,
-    selection.load,
-    'output',
-    'cc',
-    'budget_bytes',
-    `load_${selection.load}`,
-  )
-  await loadHostScalarSeries(budgetBasePath, 'budget_bytes', hostBudgetSeries)
-
-  const creditBasePath = joinUrlSegments(
-    'data',
-    selection.scenario,
-    'data',
-    selection.protocol,
-    selection.load,
-    'output',
-    'cc',
-    'credit_backlog',
-    `load_${selection.load}`,
-  )
-  await loadHostScalarSeries(creditBasePath, 'credit_backlog', hostQueueSeries)
+  await loadHostScalarSeries('budget_bytes', hostBudgetSeries)
+  await loadHostScalarSeries('credit_backlog', hostQueueSeries)
 
   console.log('[viz] Loaded scenario data', {
     scenario: selection.scenario,

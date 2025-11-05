@@ -1,6 +1,7 @@
 import './style.css'
 import { initNetworkViz, type VizController } from './viz/app.ts'
-import { loadScenarioData, type ScenarioSelection } from './viz/dataLoader.ts'
+import { loadScenarioData } from './viz/dataLoader.ts'
+import type { ScenarioSelection } from './viz/scenarioTypes.ts'
 import { scenarioNames, getProtocolsForScenario, getLoadsForScenario } from './scenarios.ts'
 import {
   DISPLAY_OPTION_DEFS,

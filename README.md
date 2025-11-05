@@ -14,6 +14,12 @@ npm run dev
 
 Open the URL printed in the terminal (usually http://localhost:5173/).
 
+## Data preparation
+
+- Raw simulation outputs live in `data/` (ignored by git).
+- Run `npm run prepare-public-data` to copy the required CSVs into `data_public/`, the dataset the website serves.
+- `npm run dev` and `npm run build` invoke this step automatically when `data/` is present. If you only need the checked-in sample data, you can skip it.
+
 ## Controls
 
 - Play/Pause: start/stop the animation

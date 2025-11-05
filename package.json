@@ -4,14 +4,16 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "predev": "node scripts/generate-manifest.cjs",
+    "predev": "npm run prepare-public-data --silent && node scripts/generate-manifest.cjs",
     "dev": "vite",
-    "prebuild": "node scripts/generate-manifest.cjs",
+    "prebuild": "npm run prepare-public-data --silent && node scripts/generate-manifest.cjs",
     "build": "tsc && vite build",
     "preview": "vite preview",
-    "generate:manifest": "node scripts/generate-manifest.cjs"
+    "generate:manifest": "node scripts/generate-manifest.cjs",
+    "prepare-public-data": "tsx scripts/prepare-public-data.ts"
   },
   "devDependencies": {
+    "tsx": "^4.19.2",
     "typescript": "~5.9.3",
     "vite": "^7.1.7"
   },
