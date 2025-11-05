@@ -5,8 +5,8 @@
     <link rel="icon" type="image/svg+xml" href="/vite.svg" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>network-viz</title>
-    <script type="module" crossorigin src="/assets/index-N-XdA17B.js"></script>
-    <link rel="stylesheet" crossorigin href="/assets/index-jRvzO7Ax.css">
+    <script type="module" crossorigin src="/assets/index-Do1mMxiw.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-7QVsNC3I.css">
   </head>
   <body>
     <div id="toolbar">
@@ -14,9 +14,11 @@
         <button id="playPause">Play</button>
         <button id="reset">Reset</button>
         <label class="inline">
-          Speed
-          <input id="speed" type="range" min="0.25" max="3" step="0.25" value="1" />
-          <span id="speedVal">1x</span>
+          Time Scale
+          <button id="speedUp" type="button">×10</button>
+          <input id="speed" type="range" min="2" max="6" step="0.01" value="5" />
+          <button id="speedDown" type="button">÷10</button>
+          <span id="speedVal">1/100,000x</span>
         </label>
       </div>
       <div class="right">
@@ -32,9 +34,13 @@
           Load (Gbps)
           <select id="loadSelect"></select>
         </label>
+        <details id="displayOptionsMenu" class="dropdown">
+          <summary>Display Options</summary>
+          <div class="dropdown-content" id="displayOptionsContainer"></div>
+        </details>
         <span id="timeLabel">t = 0.0s</span>
       </div>
     </div>
-    <div id="app"></div>
+    <div id="app"></div>
   </body>
 </html>
