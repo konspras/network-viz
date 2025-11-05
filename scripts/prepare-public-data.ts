@@ -96,6 +96,26 @@ async function copyFiles(filePaths: Iterable<string>) {
   return copied
 }
 
+type HostSeriesAvailability = Record<
+  string,
+  Record<string, Record<string, Record<string, number[]>>>
+>
+
+function markHostAvailability(
+  availability: HostSeriesAvailability,
+  selection: ScenarioSelection,
+  seriesKey: string,
+  metricsId: number,
+) {
+  const scenarioEntry = (availability[selection.scenario] ??= {})
+  const protocolEntry = (scenarioEntry[selection.protocol] ??= {})
+  const loadEntry = (protocolEntry[selection.load] ??= {})
+  const list = (loadEntry[seriesKey] ??= [])
+  if (!list.includes(metricsId)) {
+    list.push(metricsId)
+  }
+}
+
 async function main() {
   if (!(await pathExists(sourceRoot))) {
     console.log('[prepare-public-data] No raw data directory found; skipping regeneration.')
@@ -105,6 +125,8 @@ async function main() {
   const manifest = await buildManifest(sourceRoot)
   const layout = makeLeafSpineLayout()
   const requiredFiles = new Set<string>()
+  const missingScalars = new Set<string>()
+  const hostSeriesAvailability: HostSeriesAvailability = {}
 
   for (const [scenario, protocols] of Object.entries(manifest)) {
     for (const [protocol, loads] of Object.entries(protocols)) {
@@ -117,9 +139,17 @@ async function main() {
         }
         for (const node of layout.nodes) {
           for (const spec of HOST_SCALAR_SERIES) {
-            const pathName = getHostScalarCsvPath(selection, node, spec.key)
-            if (pathName) {
-              requiredFiles.add(pathName)
+            const publicPath = getHostScalarCsvPath(selection, node, spec.key)
+            if (!publicPath) continue
+            const segments = asPosixSegments(publicPath)
+            const srcSegments = [...segments]
+            srcSegments[0] = 'data'
+            const srcPath = path.join(repoRoot, ...srcSegments)
+            if (await pathExists(srcPath)) {
+              requiredFiles.add(publicPath)
+              markHostAvailability(hostSeriesAvailability, selection, spec.key, node.metricsId)
+            } else {
+              missingScalars.add(publicPath)
             }
           }
         }
@@ -136,7 +166,25 @@ async function main() {
   await fs.mkdir(publicRoot, { recursive: true })
 
   const copied = await copyFiles(requiredFiles)
-  console.log(`[prepare-public-data] Copied ${copied} file(s) into ${PUBLIC_DATA_ROOT}`)
+
+  for (const scenarioEntry of Object.values(hostSeriesAvailability)) {
+    for (const protocolEntry of Object.values(scenarioEntry)) {
+      for (const loadEntry of Object.values(protocolEntry)) {
+        for (const key of Object.keys(loadEntry)) {
+          loadEntry[key].sort((a, b) => a - b)
+        }
+      }
+    }
+  }
+
+  const availabilityOutPath = path.join(repoRoot, 'src', 'viz', 'hostSeriesAvailability.json')
+  await fs.writeFile(availabilityOutPath, JSON.stringify(hostSeriesAvailability, null, 2) + '\n')
+
+  console.log(
+    `[prepare-public-data] Copied ${copied} file(s) into ${PUBLIC_DATA_ROOT}${
+      missingScalars.size ? ` (${missingScalars.size} scalar CSVs missing)` : ''
+    }`,
+  )
 }
 
 main().catch((err) => {

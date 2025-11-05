@@ -5,7 +5,34 @@ import {
   getHostScalarCsvPath,
   getLinkDirectionPaths,
   HOST_SCALAR_SERIES,
+  type HostScalarSeriesKey,
 } from './dataPaths.ts'
+import hostSeriesAvailability from './hostSeriesAvailability.json' assert { type: 'json' }
+
+const missingScalarResources = new Set<string>()
+
+const HTML_SNIFF_RE = /^\s*<(?:!DOCTYPE\s+html|html)/i
+
+function isHtmlPayload(contentType: string | null, body: string): boolean {
+  if (contentType && contentType.toLowerCase().includes('text/html')) return true
+  return HTML_SNIFF_RE.test(body)
+}
+
+function hostScalarExists(
+  selection: ScenarioSelection,
+  seriesKey: HostScalarSeriesKey,
+  metricsId: number,
+): boolean {
+  const scenarioEntry = (hostSeriesAvailability as Record<string, any>)[selection.scenario]
+  if (!scenarioEntry) return false
+  const protocolEntry = scenarioEntry[selection.protocol]
+  if (!protocolEntry) return false
+  const loadEntry = protocolEntry[selection.load]
+  if (!loadEntry) return false
+  const hosts: unknown = loadEntry[seriesKey]
+  if (!Array.isArray(hosts)) return false
+  return hosts.includes(metricsId)
+}
 
 type DirectionSeries = {
   throughput: Float32Array
@@ -241,6 +268,13 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
       return createZeroSeries(timestamps.length)
     }
     const text = await response.text()
+    if (isHtmlPayload(response.headers.get('content-type'), text)) {
+      if (!timestamps) {
+        throw new Error(`CSV ${url} returned HTML instead of data`)
+      }
+      console.warn(`CSV ${url} returned HTML; substituting zeros`)
+      return createZeroSeries(timestamps.length)
+    }
     console.log('[viz] Fetched CSV bytes', { url, length: text.length })
     const parsed = parseCsv(text, timestamps)
     if (!timestamps) {
@@ -293,15 +327,25 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
       hostNodes.map(async (node) => {
         const url = getHostScalarCsvPath(selection, node, seriesKey)
         if (!url) return
+        if (missingScalarResources.has(url)) return
+        if (!hostScalarExists(selection, seriesKey, node.metricsId)) {
+          missingScalarResources.add(url)
+          return
+        }
         try {
           const response = await fetch(url)
           if (!response.ok) {
             if (response.status !== 404) {
-              console.warn(`Unable to fetch host ${seriesKey} CSV (${response.status}): ${url}`)
+              console.info(`Host ${seriesKey} CSV missing (${response.status}): ${url}`)
             }
+            missingScalarResources.add(url)
             return
           }
           const text = await response.text()
+          if (isHtmlPayload(response.headers.get('content-type'), text)) {
+            missingScalarResources.add(url)
+            return
+          }
           const parsed = parseScalarCsv(text, baselineTimestamps)
           let values = parsed.values
           if (values.length !== baselineTimestamps.length) {
