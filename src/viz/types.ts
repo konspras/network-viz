@@ -39,6 +39,8 @@ export type LinkSnapshot = {
 export type NodeSnapshot = {
   queue: number
   bucket?: number
+  // True when host queue comes from a host-specific scalar series (not inferred from link queues)
+  hostQueueFromScalar?: boolean
 }
 
 export type Snapshot = {

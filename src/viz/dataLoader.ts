@@ -225,12 +225,13 @@ class CsvDataSource implements TimeSeriesDataSource {
       nodeQueueCount[link.b] += 1
     }
 
-    const nodes: Record<string, { queue: number; bucket?: number }> = {}
+  const nodes: Record<string, { queue: number; bucket?: number; hostQueueFromScalar?: boolean }> = {}
     for (const node of this.layout.nodes) {
       const count = nodeQueueCount[node.id]
       const avg = count > 0 ? nodeQueueSum[node.id] / count : 0
       let bucketValue: number | undefined
       let hostQueueValue: number | undefined
+      let hostQueueFromScalar = false
       if (node.type === 'host') {
         const budgetSeries = this.hostBudgetSeries.get(node.metricsId)
         if (budgetSeries) {
@@ -241,10 +242,11 @@ class CsvDataSource implements TimeSeriesDataSource {
         if (queueSeries) {
           const interpolatedQueue = this.interpolate(queueSeries, idx, nextIdx, frac)
           hostQueueValue = Math.max(0, interpolatedQueue)
+          hostQueueFromScalar = true
         }
       }
       const queueValue = node.type === 'host' ? Math.max(0, hostQueueValue ?? avg) : Math.max(0, avg)
-      nodes[node.id] = { queue: queueValue, bucket: bucketValue }
+      nodes[node.id] = { queue: queueValue, bucket: bucketValue, hostQueueFromScalar }
     }
 
     return { t: clamped, links, nodes }

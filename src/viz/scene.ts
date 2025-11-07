@@ -384,6 +384,8 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
     const disposables: (Graphics | Container)[] = []
     const queueVisuals: QueueVisual[] = []
     const bucketVisuals: BucketVisual[] = []
+    let hostQueueBg: Graphics | null = null
+    let hostBucketContainer: Container | null = null
     const pos = positions.get(node.id)!
     const fillColor = nodeFillColor(node)
 
@@ -407,6 +409,7 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
         .stroke({ color: 0xf8fafc, width: 1, alpha: 0.6 })
       nodesLayer.addChild(barBg)
       disposables.push(barBg)
+      hostQueueBg = barBg
 
       const fill = createQueueFillGraphic('bottom')
       fill.position.set(pos.x, queueBottom)
@@ -458,6 +461,7 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
       bucketContainer.addChild(fill, bucket)
       nodesLayer.addChild(bucketContainer)
       disposables.push(bucketContainer)
+      hostBucketContainer = bucketContainer
       bucketVisuals.push({
         fill,
         width: bucketWidth,
@@ -477,11 +481,29 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
         if (hostLabel) {
           hostLabel.visible = true
         }
-        for (const queue of queueVisuals) {
-          updateQueueVisual(queue, snapshot)
+        const nodeSnap = snapshot.nodes[node.id]
+        // Host queue: hide entirely if no host-specific series exists
+        const hasHostQueueScalar = !!nodeSnap?.hostQueueFromScalar
+        if (displayOptions.hostQueues) {
+          if (!hasHostQueueScalar) {
+            if (hostQueueBg) hostQueueBg.visible = false
+            for (const q of queueVisuals) {
+              q.fill.visible = false
+            }
+          } else {
+            if (hostQueueBg) hostQueueBg.visible = true
+            for (const q of queueVisuals) {
+              updateQueueVisual(q, snapshot)
+            }
+          }
         }
-        for (const bucket of bucketVisuals) {
-          updateBucketVisual(bucket, snapshot)
+        // Host bucket: hide container when no bucket data is present
+        if (displayOptions.hostBuckets) {
+          const hasBucket = typeof nodeSnap?.bucket === 'number'
+          if (hostBucketContainer) hostBucketContainer.visible = !!hasBucket
+          for (const bucket of bucketVisuals) {
+            updateBucketVisual(bucket, snapshot)
+          }
         }
       },
       destroy() {
