@@ -27,6 +27,8 @@ body { margin: 0; overflow: hidden; }
 }
 #toolbar .left, #toolbar .right { display: flex; align-items: center; gap: 0.75rem; }
 #toolbar label.inline { display: inline-flex; align-items: center; gap: 0.5rem; color: var(--muted); }
+button.ts-btn { padding: 0.45rem 0.75rem; }
+button.ts-btn.mini { padding: 0.35rem 0.55rem; font-size: 0.75rem; }
 
 button {
   border-radius: 8px;

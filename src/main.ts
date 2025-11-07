@@ -48,6 +48,8 @@ window.addEventListener('DOMContentLoaded', async () => {
   const speedVal = document.getElementById('speedVal') as HTMLSpanElement
   const speedDownBtn = document.getElementById('speedDown') as HTMLButtonElement
   const speedUpBtn = document.getElementById('speedUp') as HTMLButtonElement
+  const speedDown2Btn = document.getElementById('speedDown2') as HTMLButtonElement | null
+  const speedUp2Btn = document.getElementById('speedUp2') as HTMLButtonElement | null
   const scenarioSelect = document.getElementById('scenarioSelect') as HTMLSelectElement
   const protocolSelect = document.getElementById('protocolSelect') as HTMLSelectElement
   const loadSelect = document.getElementById('loadSelect') as HTMLSelectElement
@@ -112,6 +114,7 @@ window.addEventListener('DOMContentLoaded', async () => {
   const denomMax = 1e6
   const exponentMin = Math.log10(denomMin)
   const exponentMax = Math.log10(denomMax)
+  const LOG10_2 = Math.log10(2)
   const numberFormatter = new Intl.NumberFormat('en-US')
 
   let currentExponent = Math.min(exponentMax, Math.max(exponentMin, Number(speedInput?.value) || 5))
@@ -143,6 +146,8 @@ window.addEventListener('DOMContentLoaded', async () => {
     speedInput.disabled = disabled
     if (speedDownBtn) speedDownBtn.disabled = disabled
     if (speedUpBtn) speedUpBtn.disabled = disabled
+    if (speedDown2Btn) speedDown2Btn.disabled = disabled
+    if (speedUp2Btn) speedUp2Btn.disabled = disabled
   }
 
   let currentDuration = 0
@@ -286,6 +291,14 @@ window.addEventListener('DOMContentLoaded', async () => {
   })
   speedUpBtn?.addEventListener('click', () => {
     currentExponent = Math.max(exponentMin, currentExponent - 1)
+    applyTimeScale()
+  })
+  speedDown2Btn?.addEventListener('click', () => {
+    currentExponent = Math.min(exponentMax, currentExponent + LOG10_2)
+    applyTimeScale()
+  })
+  speedUp2Btn?.addEventListener('click', () => {
+    currentExponent = Math.max(exponentMin, currentExponent - LOG10_2)
     applyTimeScale()
   })
 

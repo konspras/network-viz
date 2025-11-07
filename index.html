@@ -13,11 +13,17 @@
         <button id="reset">Reset</button>
         <label class="inline">
           Time Scale
-          <button id="speedUp" type="button">×10</button>
+          <button id="speedUp" type="button" class="ts-btn">×10</button>
+          <button id="speedUp2" type="button" class="ts-btn mini">×2</button>
           <input id="speed" type="range" min="2" max="6" step="0.01" value="5" />
-          <button id="speedDown" type="button">÷10</button>
+          <button id="speedDown2" type="button" class="ts-btn mini">÷2</button>
+          <button id="speedDown" type="button" class="ts-btn">÷10</button>
           <span id="speedVal">1/100,000x</span>
         </label>
+        <details id="displayOptionsMenu" class="dropdown">
+          <summary>Display Options</summary>
+          <div class="dropdown-content" id="displayOptionsContainer"></div>
+        </details>
       </div>
       <div class="right">
         <label class="inline">
@@ -32,10 +38,6 @@
           Load (Gbps)
           <select id="loadSelect"></select>
         </label>
-        <details id="displayOptionsMenu" class="dropdown">
-          <summary>Display Options</summary>
-          <div class="dropdown-content" id="displayOptionsContainer"></div>
-        </details>
         <span id="timeLabel">t = 0.0s</span>
       </div>
     </div>
