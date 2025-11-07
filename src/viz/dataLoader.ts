@@ -284,16 +284,28 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
       timestamps = parsed.timestamps
       zeroBaseTimestamps(timestamps)
     } else if (parsed.throughput.length !== timestamps.length) {
-      console.warn(`CSV ${url} has mismatched length; truncating to baseline`)
-      if (parsed.throughput.length > timestamps.length) {
-        parsed.throughput = parsed.throughput.subarray(0, timestamps.length)
-        parsed.queue = parsed.queue.subarray(0, timestamps.length)
+      const actual = parsed.throughput.length
+      const expected = timestamps.length
+      const diff = actual - expected
+      const mode = actual > expected ? 'truncating' : 'padding'
+      console.warn(
+        `[viz] CSV length mismatch for link series\n` +
+        `  file: ${url}\n` +
+        `  expected rows (excluding header): ${expected}\n` +
+        `  actual rows: ${actual}\n` +
+        `  delta: ${diff} (${mode})\n` +
+        `  action: ${actual > expected ? 'extra rows removed' : 'missing rows filled with 0'}\n` +
+        `  note: baseline timestamps length comes from first successfully loaded CSV.`,
+      )
+      if (actual > expected) {
+        parsed.throughput = parsed.throughput.subarray(0, expected)
+        parsed.queue = parsed.queue.subarray(0, expected)
       } else {
-        // pad
-        const paddedThroughput = new Float32Array(timestamps.length)
+        // pad missing rows with zeros to align to baseline
+        const paddedThroughput = new Float32Array(expected)
         paddedThroughput.set(parsed.throughput)
         parsed.throughput = paddedThroughput
-        const paddedQueue = new Float32Array(timestamps.length)
+        const paddedQueue = new Float32Array(expected)
         paddedQueue.set(parsed.queue)
         parsed.queue = paddedQueue
       }
@@ -349,11 +361,24 @@ export async function loadScenarioData(selection: ScenarioSelection): Promise<Ti
           const parsed = parseScalarCsv(text, baselineTimestamps)
           let values = parsed.values
           if (values.length !== baselineTimestamps.length) {
-            console.warn(`Host ${seriesKey} CSV length mismatch, adjusting to baseline: ${url}`)
-            if (values.length > baselineTimestamps.length) {
-              values = values.subarray(0, baselineTimestamps.length)
+            const actual = values.length
+            const expected = baselineTimestamps.length
+            const diff = actual - expected
+            const mode = actual > expected ? 'truncating' : 'padding'
+            console.warn(
+              `[viz] Host scalar CSV length mismatch (${seriesKey})\n` +
+              `  file: ${url}\n` +
+              `  host metricsId: ${node.metricsId}\n` +
+              `  expected rows: ${expected}\n` +
+              `  actual rows: ${actual}\n` +
+              `  delta: ${diff} (${mode})\n` +
+              `  action: ${actual > expected ? 'extra rows removed' : 'missing rows filled with 0'}\n` +
+              `  note: baseline derived from first link CSV timestamps.`,
+            )
+            if (actual > expected) {
+              values = values.subarray(0, expected)
             } else {
-              const padded = new Float32Array(baselineTimestamps.length)
+              const padded = new Float32Array(expected)
               padded.set(values)
               values = padded
             }

@@ -402,7 +402,7 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
     if (displayOptions.hostQueues) {
       const barBg = new Graphics()
       barBg
-        .roundRect(pos.x - barW / 2, queueTop, barW, barH, 3)
+        .rect(pos.x - barW / 2, queueTop, barW, barH)
         .fill({ color: 0x111827, alpha: 0.95 })
         .stroke({ color: 0xf8fafc, width: 1, alpha: 0.6 })
       nodesLayer.addChild(barBg)
@@ -434,7 +434,8 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
       const bucketTop = anchorBottom + bucketSpacing
       const bucketHeight = barH
       const bucketBottom = bucketTop + bucketHeight
-      const bucketRadius = 4
+  // Removed rounded corners; keep variable out to avoid unused warning.
+  // const bucketRadius = 4
       const bucketFill = { color: 0x1f2a37, alpha: 0.05 } as const
       const bucketStroke = { color: 0xe2e8f0, width: 2, alpha: 0.95 } as const
 
@@ -443,8 +444,8 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
       fill.scale.x = bucketWidth
       fill.scale.y = 0
       fill.alpha = 1
-      const bucket = new Graphics()
-      bucket.roundRect(bucketLeft, bucketTop, bucketWidth, bucketHeight, bucketRadius).fill(bucketFill).stroke(bucketStroke)
+  const bucket = new Graphics()
+  bucket.rect(bucketLeft, bucketTop, bucketWidth, bucketHeight).fill(bucketFill).stroke(bucketStroke)
       const handleWidth = Math.max(6, bucketWidth * 0.6)
       const handleLeft = bucketLeft + (bucketWidth - handleWidth) / 2
       const handleRight = handleLeft + handleWidth

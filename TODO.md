@@ -10,3 +10,4 @@
 * Automativcally reset when user selects different config.
 * Add text for credit backlog and budget values.
 * Make it obvious when there is no data for credit backlog and budget
+* Bug where when I changesscenario I et warnings about CSV length missmathc - seems to be off by 1.
