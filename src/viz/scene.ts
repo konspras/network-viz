@@ -1181,6 +1181,11 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
     updateThroughputTotal(snapshot)
     updateQueueTotal(snapshot)
     updateDashboardValues()
+    // Toggle credit labels based on options and data availability
+    const anyHostQueueSeries = displayOptions.hostQueues && layout.nodes.some(n => n.type === 'host' && !!snapshot.nodes[n.id]?.hostQueueFromScalar)
+    const anyHostBucket = displayOptions.hostBuckets && layout.nodes.some(n => n.type === 'host' && typeof snapshot.nodes[n.id]?.bucket === 'number')
+    creditLabels.stranded.visible = !!anyHostQueueSeries
+    creditLabels.available.visible = !!anyHostBucket
     // no packet movement
   }
 
@@ -1289,7 +1294,22 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
     tors: new Text({ text: 'ToRs', style: { fill: 0x9aa4b2, fontSize: 18 }, resolution: 4 }),
     spines: new Text({ text: 'Spines', style: { fill: 0x9aa4b2, fontSize: 18 }, resolution: 4 }),
   }
+  // Right-align tier labels so the right edge sits on the left margin
+  tierLabels.spines.anchor.set(1, 0.5)
+  tierLabels.tors.anchor.set(1, 0.5)
+  tierLabels.servers.anchor.set(1, 0.5)
   labelsLayer.addChild(tierLabels.spines, tierLabels.tors, tierLabels.servers)
+  // Credit labels (host-level semantics): Stranded Credit (queues) & Available Credit (buckets)
+  const creditLabels = {
+    stranded: new Text({ text: 'Stranded Credit', style: { fill: 0x9aa4b2, fontSize: 18 }, resolution: 4 }),
+    available: new Text({ text: 'Available Credit', style: { fill: 0x9aa4b2, fontSize: 18 }, resolution: 4 }),
+  }
+  // Right-align credit labels and hide by default; visibility is driven by data/options in update()
+  creditLabels.stranded.anchor.set(1, 0.5)
+  creditLabels.available.anchor.set(1, 0.5)
+  creditLabels.stranded.visible = false
+  creditLabels.available.visible = false
+  labelsLayer.addChild(creditLabels.stranded, creditLabels.available)
 
   function placeTierLabels() {
     const spNodes = layout.nodes.filter(n => n.id.startsWith('sp')).map(n => positions.get(n.id)!)
@@ -1298,13 +1318,31 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
     const spY = avg(spNodes.map(p => p.y))
     const torY = avg(torNodes.map(p => p.y))
     const srvY = avg(srvNodes.map(p => p.y))
-    const leftSp = Math.min(...spNodes.map(p => p.x))
-    const leftTor = Math.min(...torNodes.map(p => p.x))
-    const leftSrv = Math.min(...srvNodes.map(p => p.x))
-    const leftX = Math.min(leftSp, leftTor, leftSrv) - 90
-    tierLabels.spines.position.set(leftX, spY - 8)
-    tierLabels.tors.position.set(leftX, torY - 8)
-    tierLabels.servers.position.set(leftX, srvY - 8)
+
+    // Compute true left edges of corresponding elements
+  const hostLeftEdge = srvNodes.length ? Math.min(...srvNodes.map(p => p.x - 14)) : Infinity
+    const torLeftEdge = torGeom.size ? Math.min(...Array.from(torGeom.values()).map(g => g.left)) : (torNodes.length ? Math.min(...torNodes.map(p => p.x)) : Infinity)
+    const spineLeftEdge = spineGeom.size ? Math.min(...Array.from(spineGeom.values()).map(g => g.left)) : (spNodes.length ? Math.min(...spNodes.map(p => p.x)) : Infinity)
+
+  // Single global right edge for all labels; fixed gap from the leftmost element edge
+  const commonRightX = Math.min(hostLeftEdge, torLeftEdge, spineLeftEdge) - 16
+
+    // Tier labels share the same right edge
+  // Push tier labels slightly downward for better alignment
+  tierLabels.spines.position.set(commonRightX, spY + 2)
+  tierLabels.tors.position.set(commonRightX, torY + 2)
+  tierLabels.servers.position.set(commonRightX, srvY + 2)
+
+    // Credit labels use same common right edge and simple vertical math tied to server row
+    if (srvNodes.length) {
+      const queueTop = srvY + 14 + 6
+      const queueMidY = queueTop + 16
+      const bucketTop = queueTop + (displayOptions.hostQueues ? (32 + 6) : 6)
+      const bucketMidY = bucketTop + 16
+      // Push credit labels slightly downward to match visual center
+  creditLabels.stranded.position.set(commonRightX, queueMidY + 8)
+  creditLabels.available.position.set(commonRightX, bucketMidY + 8)
+    }
   }
   function avg(arr: number[]) { return arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : 0 }
   placeTierLabels()
