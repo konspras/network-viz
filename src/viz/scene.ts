@@ -120,6 +120,7 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
     height: number
     nodeId: string
     maxValue: number
+    label?: QueueLabelDescriptor
   }
 
   type NodeVisual = {
@@ -426,6 +427,7 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
         valueSource: { kind: 'node', nodeId: node.id },
         maxValue: HOST_QUEUE_MAX_BYTES,
         tintOverride: 0xef4444,
+        label: { key: `${node.id}:hostq`, position: { x: pos.x, y: queueTop + barH / 2 }, anchorY: 0.5 },
       })
     }
 
@@ -468,6 +470,7 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
         height: bucketHeight,
         nodeId: node.id,
         maxValue: HOST_BUCKET_MAX_BYTES,
+        label: { key: `${node.id}:hostb`, position: { x: pos.x, y: bucketTop + bucketHeight / 2 }, anchorY: 0.5 },
       })
     }
 
@@ -817,7 +820,10 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
     visual.fill.tint = visual.tintOverride ?? colorForQueueUsage(norm)
     visual.fill.visible = norm > 0
     if (displayOptions.queueLabels && visual.label) {
-      const displayValue = Math.max(0, value)
+      let displayValue = Math.max(0, value)
+      if (visual.label.key.endsWith(':hostq')) {
+        displayValue = displayValue / 1000 // convert bytes -> KB
+      }
       useQueueLabel(visual.label.key, visual.label.position.x, visual.label.position.y, displayValue, visual.label.anchorY)
     }
   }
@@ -834,6 +840,13 @@ export function buildScene(root: Container, layout: Layout, initialDisplayOption
     visual.fill.scale.y = visual.height * norm
     visual.fill.tint = 0x7dd3fc
     visual.fill.visible = norm > 0
+    if (displayOptions.queueLabels && visual.label) {
+      let displayValue = value
+      if (visual.label.key.endsWith(':hostb')) {
+        displayValue = displayValue / 1000 // bytes -> KB
+      }
+      useQueueLabel(visual.label.key, visual.label.position.x, visual.label.position.y, displayValue, visual.label.anchorY)
+    }
   }
 
   const hidePacketGroup = (packets: PacketVisual[]) => {
